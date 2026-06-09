@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+# External source trees cloned by install.sh.
+MedSAM2/
+nnInteractive/
+
+# Model weights are downloaded locally and are not committed.
+checkpoints/
+.hf_cache/
+
+# Keep one lightweight test image in git; generated outputs and extra demos stay local.
+examples/*
+!examples/
+!examples/eay_demo_lung_cancer_image.nii.gz
+
+# Runtime outputs.
+outputs/
+*.npz
+*_pred.nii.gz
+*_smoke.nii.gz
+*_smoke.npz
+
+.DS_Store
