@@ -10,6 +10,7 @@ MEDSAM2_COMMIT="${MEDSAM2_COMMIT:-332f30d420f1d1b08e2a79b3ae6a602458808383}"
 NNINTERACTIVE_COMMIT="${NNINTERACTIVE_COMMIT:-eb1e2718431acae00953069cfa33199ee1cb8440}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
+export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "uv was not found. Installing uv..."
@@ -40,6 +41,9 @@ echo "==> Installing PyTorch"
 uv pip install --python .venv/bin/python \
   torch==2.5.1 torchvision==0.20.1 \
   --index-url "$TORCH_INDEX_URL"
+
+echo "==> Upgrading build tools"
+uv pip install --python .venv/bin/python "setuptools>=77" wheel
 
 echo "==> Installing local repos and runtime dependencies"
 SAM2_BUILD_CUDA=0 uv pip install --python .venv/bin/python --no-build-isolation \

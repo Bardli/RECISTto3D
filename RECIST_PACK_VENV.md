@@ -36,11 +36,15 @@ git -C nnInteractive checkout eb1e2718431acae00953069cfa33199ee1cb8440
 # Create env.
 uv python install 3.12
 uv venv --python 3.12 .venv
+export UV_LINK_MODE=copy
 
 # CUDA 12.4 PyTorch wheels.
 uv pip install --python .venv/bin/python \
   torch==2.5.1 torchvision==0.20.1 \
   --index-url https://download.pytorch.org/whl/cu124
+
+# Build tools for no-build-isolation package builds.
+uv pip install --python .venv/bin/python "setuptools>=77" wheel
 
 # Local projects and runtime utilities.
 SAM2_BUILD_CUDA=0 uv pip install --python .venv/bin/python --no-build-isolation \

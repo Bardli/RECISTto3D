@@ -44,7 +44,7 @@ The script will:
 2. clone MedSAM2 into `./MedSAM2`
 3. clone nnInteractive into `./nnInteractive`
 4. create `.venv` with Python 3.12
-5. install PyTorch and both local repos with `uv`
+5. install PyTorch, upgrade build tools, and install both local repos with `uv`
 6. download MedSAM2, Efficient MedSAM2 small, and nnInteractive checkpoints
 7. run a lightweight import check
 
@@ -79,6 +79,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ```bash
 uv python install 3.12
 uv venv --python 3.12 .venv
+export UV_LINK_MODE=copy
 ```
 
 ### 5. Install PyTorch
@@ -99,7 +100,16 @@ uv pip install --python .venv/bin/python \
   --index-url https://download.pytorch.org/whl/cpu
 ```
 
-### 6. Install Local Projects And Utilities
+### 6. Upgrade Build Tools
+
+`nnInteractive` depends on packages that need a recent `setuptools` when using
+`--no-build-isolation`.
+
+```bash
+uv pip install --python .venv/bin/python "setuptools>=77" wheel
+```
+
+### 7. Install Local Projects And Utilities
 
 ```bash
 SAM2_BUILD_CUDA=0 uv pip install --python .venv/bin/python --no-build-isolation \
@@ -108,7 +118,7 @@ SAM2_BUILD_CUDA=0 uv pip install --python .venv/bin/python --no-build-isolation 
   pandas matplotlib huggingface_hub SimpleITK scipy opencv-python-headless
 ```
 
-### 7. Download Checkpoints
+### 8. Download Checkpoints
 
 ```bash
 .venv/bin/python - <<'PY'
