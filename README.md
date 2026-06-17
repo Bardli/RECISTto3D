@@ -212,7 +212,9 @@ nnInteractive on CPU:
 ```
 
 Use `--recist recist.nii.gz` instead of `--recist-line` when you already have a
-RECIST mask.
+RECIST mask. NIfTI RECIST masks default to `--recist-space strict`, which requires
+the mask and image to have matching size/spacing/origin/direction; use
+`--recist-space index` only for legacy array-only behavior.
 
 ## Notes
 

@@ -155,7 +155,13 @@ You can provide RECIST in three ways:
 2. one or more `--recist-line z,x1,y1,x2,y2[,label]`
 3. an input NPZ that contains a `recist` key
 
-`--recist` accepts NPZ/NPY/NIfTI/PNG. It must have the same `D,H,W` shape as the
+`--recist` accepts NPZ/NPY/NIfTI/PNG. For NIfTI RECIST masks, the default
+`--recist-space strict` requires the RECIST mask and image to have matching
+size/spacing/origin/direction before inference starts. Use `--recist-space index`
+only when the mask header is wrong but the array is already aligned to the image
+index grid.
+
+The RECIST mask used for inference must have the same `D,H,W` shape as the
 loaded image after 2D inputs are promoted to one-slice volumes.
 
 For a multi-lesion RECIST mask, each lesion should have a nonzero integer label.

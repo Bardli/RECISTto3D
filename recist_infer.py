@@ -73,6 +73,26 @@ def is_nifti(path: Path) -> bool:
     return name.endswith(".nii") or name.endswith(".nii.gz")
 
 
+def assert_sitk_geometry_matches(recist_image, reference_image, recist_path: Path, *, atol: float = 1e-5) -> None:
+    mismatches = []
+    if recist_image.GetSize() != reference_image.GetSize():
+        mismatches.append(f"size recist={recist_image.GetSize()} image={reference_image.GetSize()}")
+    if not np.allclose(recist_image.GetSpacing(), reference_image.GetSpacing(), atol=atol):
+        mismatches.append(f"spacing recist={recist_image.GetSpacing()} image={reference_image.GetSpacing()}")
+    if not np.allclose(recist_image.GetOrigin(), reference_image.GetOrigin(), atol=atol):
+        mismatches.append(f"origin recist={recist_image.GetOrigin()} image={reference_image.GetOrigin()}")
+    if not np.allclose(recist_image.GetDirection(), reference_image.GetDirection(), atol=atol):
+        mismatches.append(f"direction recist={recist_image.GetDirection()} image={reference_image.GetDirection()}")
+    if mismatches:
+        details = "; ".join(mismatches)
+        raise ValueError(
+            "RECIST NIfTI geometry must match image NIfTI geometry. "
+            f"{recist_path} mismatch: {details}. "
+            "Fix/resample the image and RECIST mask to the same grid before inference, "
+            "or use --recist-space index only when the mask header is wrong but the array is already image-index aligned."
+        )
+
+
 def load_npz_array(path: Path, preferred_keys: Iterable[str], explicit_key: str | None) -> tuple[np.ndarray, str]:
     data = np.load(path, allow_pickle=True)
     if explicit_key is not None:
@@ -159,6 +179,8 @@ def load_recist(
     recist_key: str | None,
     recist_lines: list[str],
     shape: tuple[int, int, int],
+    reference_sitk_image: object | None = None,
+    recist_space: str = "strict",
 ) -> tuple[np.ndarray, str]:
     if recist_path is not None and recist_lines:
         raise ValueError("Use either --recist or --recist-line, not both.")
@@ -173,8 +195,11 @@ def load_recist(
         elif is_nifti(recist_path):
             import SimpleITK as sitk
 
-            recist = sitk.GetArrayFromImage(sitk.ReadImage(str(recist_path)))
+            recist_image = sitk.ReadImage(str(recist_path))
+            if recist_space == "strict" and reference_sitk_image is not None:
+                assert_sitk_geometry_matches(recist_image, reference_sitk_image, recist_path)
             source = str(recist_path)
+            recist = sitk.GetArrayFromImage(recist_image)
         else:
             from PIL import Image
 
@@ -200,6 +225,14 @@ def load_recist(
 
     if not np.issubdtype(recist.dtype, np.integer):
         recist = (recist > 0).astype(np.uint16)
+    if not np.any(recist):
+        hint = ""
+        if recist_path is not None and is_nifti(recist_path) and recist_space == "strict":
+            hint = (
+                "; use --recist-space index only if the mask header is wrong but the array "
+                "is already image-index aligned"
+            )
+        raise ValueError(f"RECIST mask is empty{hint}.")
     return recist.astype(np.uint16, copy=False), source
 
 
@@ -699,6 +732,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--image-key", help="NPZ key for --image.")
     parser.add_argument("--recist-key", help="NPZ key for --recist, or input NPZ recist key.")
+    parser.add_argument(
+        "--recist-space",
+        choices=("strict", "index"),
+        default="strict",
+        help=(
+            "How to interpret NIfTI --recist. 'strict' requires matching NIfTI "
+            "size/spacing/origin/direction; 'index' ignores NIfTI geometry and "
+            "keeps legacy array-only behavior."
+        ),
+    )
     parser.add_argument("--spacing", help="Override spacing as 'z,y,x'.")
     parser.add_argument("--output-nifti", help="Optional output segmentation NIfTI path.")
     parser.add_argument("--shift", type=int, default=0, help="Extra pixels added around RECIST-derived bbox.")
@@ -756,6 +799,8 @@ def main() -> int:
         recist_key=args.recist_key,
         recist_lines=args.recist_line,
         shape=loaded.array.shape,
+        reference_sitk_image=loaded.sitk_image,
+        recist_space=args.recist_space,
     )
 
     if args.model in {"eff-medsam2", "medsam2"}:
