@@ -47,6 +47,7 @@ class PromptSpec:
     z: int
     box_xyxy: np.ndarray | None = None
     points_xy: np.ndarray | None = None
+    negative_points_xy: np.ndarray | None = None
     z_min: int | None = None
     z_max: int | None = None
 
@@ -208,9 +209,17 @@ def load_recist(
             source = str(recist_path)
         recist = as_3d_volume(recist, name="recist")
     elif recist_lines:
+        parsed_lines = [parse_recist_line(line) for line in recist_lines]
+        labels = [line[-1] for line in parsed_lines]
+        duplicate_labels = sorted({label for label in labels if labels.count(label) > 1})
+        if duplicate_labels:
+            raise ValueError(
+                "Each --recist-line must use a unique nonzero label for multi-lesion inference. "
+                f"Duplicate labels: {duplicate_labels}. Use 'z,x1,y1,x2,y2,label'."
+            )
+
         recist = np.zeros(shape, dtype=np.uint16)
-        for line in recist_lines:
-            z, x1, y1, x2, y2, label = parse_recist_line(line)
+        for z, x1, y1, x2, y2, label in parsed_lines:
             draw_recist_line(recist, z, x1, y1, x2, y2, label)
         source = "cli-recist-line"
     elif image_path.suffix.lower() == ".npz":
@@ -245,6 +254,8 @@ def parse_recist_line(value: str) -> tuple[int, int, int, int, int, int]:
         z, x1, y1, x2, y2, label = parts
     else:
         raise argparse.ArgumentTypeError("--recist-line must be 'z,x1,y1,x2,y2' or 'z,x1,y1,x2,y2,label'")
+    if label <= 0:
+        raise argparse.ArgumentTypeError("--recist-line label must be a positive nonzero integer")
     return z, x1, y1, x2, y2, label
 
 
@@ -295,7 +306,7 @@ def get_diameter_bbox(recist_slice: np.ndarray, shift: int = 0) -> np.ndarray:
     return np.array([x_min, y_min, x_max, y_max], dtype=np.float32)
 
 
-def get_recist_5_points(recist_slice: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+def get_recist_5_points(recist_slice: np.ndarray, rng) -> np.ndarray:
     coords = recist_coords_xy(recist_slice)
     if len(coords) < 5:
         raise ValueError(f"Cannot sample 5 points; RECIST line only has {len(coords)} pixels.")
@@ -303,11 +314,43 @@ def get_recist_5_points(recist_slice: np.ndarray, rng: np.random.Generator) -> n
     return coords[idx].astype(np.float32)
 
 
+def get_recist_negative_points(recist_slice: np.ndarray, count: int) -> np.ndarray:
+    """Adapt benchmark get_negative_pts geometry to RECIST endpoints only."""
+    if count not in (4, 6):
+        raise ValueError(f"RECIST negative point count must be 4 or 6, got {count}")
+
+    h, w = recist_slice.shape
+    p1, p2 = recist_endpoints_xy(recist_slice)
+    axis = p2 - p1
+    diameter = float(np.linalg.norm(axis))
+    if diameter <= 0:
+        raise ValueError("RECIST line must have a nonzero diameter")
+
+    normal = np.array([-axis[1], axis[0]], dtype=np.float32) / diameter
+    half_len = diameter / 2.0
+    center = (p1 + p2) / 2.0
+
+    points = np.stack(
+        [
+            p1 + normal * half_len,
+            p1 - normal * half_len,
+            p2 + normal * half_len,
+            p2 - normal * half_len,
+            center + normal * half_len * 1.2,
+            center - normal * half_len * 1.2,
+        ],
+        axis=0,
+    ).astype(np.float32)
+    points[:, 0] = np.clip(points[:, 0], 0, w - 1)
+    points[:, 1] = np.clip(points[:, 1], 0, h - 1)
+    return points[:count]
+
+
 def prompt_specs_from_recist(
     recist: np.ndarray,
     spacing: np.ndarray,
     args,
-    rng: np.random.Generator,
+    rng,
     *,
     target: str,
 ) -> list[PromptSpec]:
@@ -332,9 +375,24 @@ def prompt_specs_from_recist(
         if target == "box":
             box_2d = get_diameter_bbox(recist_slice, shift=args.shift)
             specs.append(PromptSpec(label=label, kind="box", z=z_mid_orig, box_xyxy=box_2d, z_min=z_min, z_max=z_max))
-        elif target == "5_points":
+        elif target in {"5_points", "5pos_4neg", "5pos_6neg"}:
             points = get_recist_5_points(recist_slice, rng)
-            specs.append(PromptSpec(label=label, kind="points", z=z_mid_orig, points_xy=points, z_min=z_min, z_max=z_max))
+            negative_points = None
+            if target == "5pos_4neg":
+                negative_points = get_recist_negative_points(recist_slice, count=4)
+            elif target == "5pos_6neg":
+                negative_points = get_recist_negative_points(recist_slice, count=6)
+            specs.append(
+                PromptSpec(
+                    label=label,
+                    kind="points",
+                    z=z_mid_orig,
+                    points_xy=points,
+                    negative_points_xy=negative_points,
+                    z_min=z_min,
+                    z_max=z_max,
+                )
+            )
         else:
             raise ValueError(f"Unknown RECIST prompt target: {target}")
     return specs
@@ -475,7 +533,7 @@ def load_medsam2_predictor(args):
 def infer_medsam2(image: np.ndarray, recist: np.ndarray, spacing: np.ndarray, args) -> InferenceResult:
     import torch
 
-    rng = np.random.default_rng(args.seed)
+    rng = np.random.RandomState(args.seed)
     prompt_specs = prompt_specs_from_recist(recist, spacing, args, rng, target="box")
     if not prompt_specs:
         raise ValueError("No prompts were provided")
@@ -605,8 +663,8 @@ def infer_nninteractive(image: np.ndarray, recist: np.ndarray, spacing: np.ndarr
     add_to_syspath(NNINTERACTIVE_ROOT)
     from nnInteractive.inference.inference_session import nnInteractiveInferenceSession
 
-    rng = np.random.default_rng(args.seed)
-    prompt_specs = prompt_specs_from_recist(recist, spacing, args, rng, target="5_points")
+    rng = np.random.RandomState(args.seed)
+    prompt_specs = prompt_specs_from_recist(recist, spacing, args, rng, target=args.nninteractive_prompt)
     if not prompt_specs:
         raise ValueError("No prompts were provided")
 
@@ -640,18 +698,39 @@ def infer_nninteractive(image: np.ndarray, recist: np.ndarray, spacing: np.ndarr
             session.reset_interactions()
 
         if prompt.kind == "box":
+            import math as _math
+
             x1, y1, x2, y2 = prompt.box_xyxy.astype(int)
-            # nnInteractive bbox order follows the raw image shape passed to set_image:
-            # [D, H, W] -> [[z1,z2], [y1,y2], [x1,x2]], half-open intervals.
-            bbox_dhw = [[prompt.z, prompt.z + 1], [int(y1), int(y2) + 1], [int(x1), int(x2) + 1]]
+            spacing_z = float(spacing[0])
+            spacing_y = float(spacing[1])
+            spacing_x = float(spacing[2])
+            diameter_mm = _math.hypot((int(y2) - int(y1)) * spacing_y, (int(x2) - int(x1)) * spacing_x)
+            half_dz = max(10, int(round(diameter_mm / max(spacing_z, 0.1) / 2)))
+            z_lo = max(0, int(prompt.z) - half_dz)
+            z_hi = min(raw_image.shape[0], int(prompt.z) + half_dz + 1)
+            bbox_dhw = [[z_lo, z_hi], [int(y1), int(y2) + 1], [int(x1), int(x2) + 1]]
             boxes.append([x1, y1, prompt.z, x2, y2, prompt.z])
-            session.add_bbox_interaction(bbox_dhw, include_interaction=True)
+            session.add_bbox_interaction(bbox_dhw, include_interaction=True, run_prediction=False)
         elif prompt.kind == "points":
             for x, y in prompt.points_xy:
-                session.add_point_interaction((prompt.z, int(round(y)), int(round(x))), include_interaction=True)
+                session.add_point_interaction(
+                    (prompt.z, int(round(y)), int(round(x))),
+                    include_interaction=True,
+                    run_prediction=False,
+                )
+            if prompt.negative_points_xy is not None:
+                for x, y in prompt.negative_points_xy:
+                    session.add_point_interaction(
+                        (prompt.z, int(round(y)), int(round(x))),
+                        include_interaction=False,
+                        run_prediction=False,
+                    )
         else:
             raise ValueError(f"Unsupported prompt kind: {prompt.kind}")
 
+        session.new_interaction_centers = [session.new_interaction_centers[-1]]
+        session.new_interaction_zoom_out_factors = [session.new_interaction_zoom_out_factors[-1]]
+        session._predict()
         segs[target > 0] = prompt.label
 
     boxes_array = np.asarray(boxes, dtype=np.float32).reshape((-1, 6)) if boxes else np.zeros((0, 6), dtype=np.float32)
@@ -659,7 +738,7 @@ def infer_nninteractive(image: np.ndarray, recist: np.ndarray, spacing: np.ndarr
         "model": args.model,
         "model_dir": model_dir,
         "device": device,
-        "prompt": "recist-5points",
+        "prompt": f"recist-{args.nninteractive_prompt.replace('_', '-')}",
         "preprocessing": "nninteractive_internal_raw_set_image",
         "spacing_zyx": spacing.tolist(),
         "labels": labels,
@@ -777,6 +856,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fold passed to nnInteractive. Defaults to inferring the only fold_* folder in the model dir.",
     )
     parser.add_argument("--nninteractive-checkpoint", default="checkpoint_final.pth", help="Checkpoint filename for nnInteractive.")
+    parser.add_argument(
+        "--nninteractive-prompt",
+        choices=("5_points", "5pos_4neg", "5pos_6neg"),
+        default="5_points",
+        help=(
+            "RECIST-derived nnInteractive prompt. 5_points uses five foreground points on the RECIST line. "
+            "5pos_4neg adds four RECIST-derived rotated-box corner background points. "
+            "5pos_6neg also adds two minor-axis background points."
+        ),
+    )
     parser.add_argument("--nninteractive-compile", action="store_true", help="Enable torch.compile for nnInteractive.")
     parser.add_argument("--no-autozoom", action="store_true", help="Disable nnInteractive autozoom.")
     parser.add_argument("--torch-threads", type=int, help="CPU thread count for nnInteractive preprocessing.")

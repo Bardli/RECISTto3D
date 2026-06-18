@@ -78,9 +78,8 @@ Run with a RECIST line typed directly on the command line:
   --model eff-medsam2 \
   --image image.nii.gz \
   --recist-line 64,108,229,160,281 \
-  --spacing 5.0,0.7285,0.7285 \
   --intensity window \
-  --window=-175,275 \
+  --window=-150,250 \
   --output pred.npz \
   --output-nifti pred.nii.gz
 ```
@@ -97,7 +96,23 @@ or, with an explicit label:
 z,x1,y1,x2,y2,label
 ```
 
-It can be repeated for multiple lesions.
+It can be repeated for multiple lesions. When passing multiple RECIST lines,
+each line must use a unique nonzero label:
+
+```bash
+.venv/bin/python recist_infer.py \
+  --model eff-medsam2 \
+  --image image.nii.gz \
+  --recist-line 64,108,229,160,281,1 \
+  --recist-line 72,210,180,255,220,2 \
+  --intensity window \
+  --window=-150,250 \
+  --output pred.npz \
+  --output-nifti pred.nii.gz
+```
+
+For NIfTI images, spacing is read from the image header. Only pass `--spacing`
+when the image metadata is missing or wrong.
 
 Run nnInteractive with the same RECIST mask:
 
@@ -108,6 +123,28 @@ Run nnInteractive with the same RECIST mask:
   --recist recist.nii.gz \
   --output pred_nninteractive.npz \
   --output-nifti pred_nninteractive.nii.gz
+```
+
+nnInteractive prompt choices:
+
+- `--nninteractive-prompt 5_points` uses five foreground points sampled on the RECIST line. This is the default and matches the RECIST benchmark prompt.
+- `--nninteractive-prompt 5pos_4neg` uses five foreground RECIST-line points plus four background points at RECIST-derived rotated-box corners.
+- `--nninteractive-prompt 5pos_6neg` adds two more background points on the RECIST minor axis, outside the line center.
+
+The positive/negative modes adapt the benchmark mask-derived `get_negative_pts`
+geometry, but derive the negative points from the RECIST line endpoints only; no
+GT mask is used.
+
+Example positive/negative nnInteractive run:
+
+```bash
+.venv/bin/python recist_infer.py \
+  --model nninteractive \
+  --image image.nii.gz \
+  --recist recist.nii.gz \
+  --nninteractive-prompt 5pos_4neg \
+  --output pred_nninteractive_posneg.npz \
+  --output-nifti pred_nninteractive_posneg.nii.gz
 ```
 
 By default nnInteractive uses the pack-local model directory:
