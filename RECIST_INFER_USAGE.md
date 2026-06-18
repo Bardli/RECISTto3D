@@ -133,7 +133,9 @@ nnInteractive prompt choices:
 
 The positive/negative modes adapt the benchmark mask-derived `get_negative_pts`
 geometry, but derive the negative points from the RECIST line endpoints only; no
-GT mask is used.
+GT mask is used. Out-of-bounds background candidates, duplicate voxels, and
+points that would land on the RECIST line are dropped rather than clipped onto
+the image boundary.
 
 Example positive/negative nnInteractive run:
 

@@ -314,12 +314,44 @@ def get_recist_5_points(recist_slice: np.ndarray, rng) -> np.ndarray:
     return coords[idx].astype(np.float32)
 
 
+def filter_background_points(
+    points_xy: np.ndarray,
+    foreground_xy: np.ndarray,
+    shape: tuple[int, int],
+    *,
+    forbidden_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Drop unsafe background points instead of clipping them onto foreground."""
+    h, w = shape
+    foreground_voxels = {
+        (int(round(float(x))), int(round(float(y))))
+        for x, y in np.asarray(foreground_xy, dtype=np.float32)
+    }
+    kept: list[list[float]] = []
+    seen: set[tuple[int, int]] = set()
+    for x, y in np.asarray(points_xy, dtype=np.float32):
+        xf = float(x)
+        yf = float(y)
+        if xf < 0 or xf > w - 1 or yf < 0 or yf > h - 1:
+            continue
+        xi = int(round(xf))
+        yi = int(round(yf))
+        if xi < 0 or xi >= w or yi < 0 or yi >= h:
+            continue
+        if (xi, yi) in foreground_voxels or (xi, yi) in seen:
+            continue
+        if forbidden_mask is not None and bool(forbidden_mask[yi, xi]):
+            continue
+        kept.append([xf, yf])
+        seen.add((xi, yi))
+    return np.asarray(kept, dtype=np.float32).reshape(-1, 2)
+
+
 def get_recist_negative_points(recist_slice: np.ndarray, count: int) -> np.ndarray:
     """Adapt benchmark get_negative_pts geometry to RECIST endpoints only."""
     if count not in (4, 6):
         raise ValueError(f"RECIST negative point count must be 4 or 6, got {count}")
 
-    h, w = recist_slice.shape
     p1, p2 = recist_endpoints_xy(recist_slice)
     axis = p2 - p1
     diameter = float(np.linalg.norm(axis))
@@ -330,7 +362,7 @@ def get_recist_negative_points(recist_slice: np.ndarray, count: int) -> np.ndarr
     half_len = diameter / 2.0
     center = (p1 + p2) / 2.0
 
-    points = np.stack(
+    candidate_points = np.stack(
         [
             p1 + normal * half_len,
             p1 - normal * half_len,
@@ -341,9 +373,13 @@ def get_recist_negative_points(recist_slice: np.ndarray, count: int) -> np.ndarr
         ],
         axis=0,
     ).astype(np.float32)
-    points[:, 0] = np.clip(points[:, 0], 0, w - 1)
-    points[:, 1] = np.clip(points[:, 1], 0, h - 1)
-    return points[:count]
+
+    return filter_background_points(
+        candidate_points[:count],
+        recist_coords_xy(recist_slice),
+        recist_slice.shape,
+        forbidden_mask=recist_slice > 0,
+    )
 
 
 def prompt_specs_from_recist(
@@ -697,6 +733,9 @@ def infer_nninteractive(image: np.ndarray, recist: np.ndarray, spacing: np.ndarr
         if i > 0:
             session.reset_interactions()
 
+        prediction_center = None
+        prediction_zoom_out_factor = None
+
         if prompt.kind == "box":
             import math as _math
 
@@ -711,7 +750,12 @@ def infer_nninteractive(image: np.ndarray, recist: np.ndarray, spacing: np.ndarr
             bbox_dhw = [[z_lo, z_hi], [int(y1), int(y2) + 1], [int(x1), int(x2) + 1]]
             boxes.append([x1, y1, prompt.z, x2, y2, prompt.z])
             session.add_bbox_interaction(bbox_dhw, include_interaction=True, run_prediction=False)
+            prediction_center = session.new_interaction_centers[-1]
+            prediction_zoom_out_factor = session.new_interaction_zoom_out_factors[-1]
         elif prompt.kind == "points":
+            if prompt.points_xy is not None and len(prompt.points_xy):
+                cx, cy = np.mean(prompt.points_xy, axis=0)
+                prediction_center = (int(prompt.z), int(round(float(cy))), int(round(float(cx))))
             for x, y in prompt.points_xy:
                 session.add_point_interaction(
                     (prompt.z, int(round(y)), int(round(x))),
@@ -728,8 +772,16 @@ def infer_nninteractive(image: np.ndarray, recist: np.ndarray, spacing: np.ndarr
         else:
             raise ValueError(f"Unsupported prompt kind: {prompt.kind}")
 
-        session.new_interaction_centers = [session.new_interaction_centers[-1]]
-        session.new_interaction_zoom_out_factors = [session.new_interaction_zoom_out_factors[-1]]
+        # Predict around a foreground/lesion center. Negative clicks are added
+        # after foreground clicks, so the last interaction center can be bg.
+        if prediction_center is not None:
+            session.new_interaction_centers = [prediction_center]
+        else:
+            session.new_interaction_centers = [session.new_interaction_centers[-1]]
+        if prediction_zoom_out_factor is not None:
+            session.new_interaction_zoom_out_factors = [prediction_zoom_out_factor]
+        else:
+            session.new_interaction_zoom_out_factors = [session.new_interaction_zoom_out_factors[-1]]
         session._predict()
         segs[target > 0] = prompt.label
 
