@@ -94,14 +94,23 @@ _JS_TEMPLATE = r"""
       .nv-r::-webkit-slider-thumb { pointer-events:all; -webkit-appearance:none;
         width:11px; height:11px; border-radius:50%; background:#7b6cf0;
         cursor:pointer; margin-top:-4px; }
-      .recist-table-row { color:#f5f7ff; }
-      .recist-table-row:hover { background:#2f3558 !important; }
-      .recist-table-row.active { background:#41507d !important; }
-      .recist-delete {
-        padding:2px 7px; border-radius:3px; border:1px solid #ff77aa;
-        background:#431329; color:#fff; cursor:pointer; font:12px/1.4 monospace;
+      .recist-table { background:#050816 !important; color:#f8fbff !important; }
+      .recist-table th {
+        background:#243056 !important; color:#ffffff !important;
+        border-bottom:1px solid #8fa4ff !important;
       }
-      .recist-delete:hover { border-color:#ffb3cc; color:#fff; background:#7a1d46; }
+      .recist-table td {
+        background:#10162b !important; color:#f8fbff !important;
+        border-bottom:1px solid #56627f !important;
+      }
+      .recist-table-row { background:#10162b !important; color:#f8fbff !important; }
+      .recist-table-row:hover td { background:#31406c !important; color:#ffffff !important; }
+      .recist-table-row.active td { background:#455c9a !important; color:#ffffff !important; }
+      .recist-delete {
+        padding:2px 7px; border-radius:3px; border:1px solid #ff9cc0 !important;
+        background:#5f1438 !important; color:#ffffff !important; cursor:pointer; font:12px/1.4 monospace;
+      }
+      .recist-delete:hover { border-color:#ffd0df !important; color:#ffffff !important; background:#8f2453 !important; }
     `;
     document.head.appendChild(s);
   }
@@ -153,6 +162,11 @@ _JS_TEMPLATE = r"""
   drawBtn.style.cssText = BTN_DEFAULT;
   bar.appendChild(drawBtn);
 
+  const clearBtn = document.createElement('button');
+  clearBtn.textContent = 'Clear';
+  clearBtn.style.cssText = BTN_DEFAULT;
+  bar.appendChild(clearBtn);
+
   const VIEWS = [[0,'Axial'],[1,'Coronal'],[2,'Sagittal'],[3,'Multi']];
   const btnMap = {};
   VIEWS.forEach(([t, name]) => {
@@ -166,8 +180,8 @@ _JS_TEMPLATE = r"""
 
   const tablePanel = document.createElement('div');
   tablePanel.style.cssText = `
-    width:100%; box-sizing:border-box; background:#080b18; color:#f5f7ff;
-    border-top:1px solid #495170; padding:8px 10px;
+    width:100%; box-sizing:border-box; background:#050816; color:#f8fbff;
+    border-top:1px solid #8fa4ff; padding:8px 10px;
     font:12px/1.35 'SF Mono',monospace; overflow-x:auto;
   `;
   wrap.appendChild(tablePanel);
@@ -463,9 +477,9 @@ _JS_TEMPLATE = r"""
       return;
     }
     tablePanel.innerHTML = `
-      <table style="width:100%;border-collapse:collapse;min-width:620px;">
+      <table class="recist-table" style="width:100%;border-collapse:collapse;min-width:620px;">
         <thead>
-          <tr style="color:#ffffff;text-align:left;border-bottom:1px solid #6f789b;background:#171c32;">
+          <tr style="color:#ffffff;text-align:left;">
             <th style="padding:5px 7px;">Label</th>
             <th style="padding:5px 7px;">Z</th>
             <th style="padding:5px 7px;">X1</th>
@@ -479,7 +493,7 @@ _JS_TEMPLATE = r"""
         </thead>
         <tbody>
           ${recistLines.map(line => `
-            <tr class="recist-table-row${line.label === selectedLabel ? ' active' : ''}" data-label="${line.label}" style="cursor:pointer;border-bottom:1px solid #4b5575;">
+            <tr class="recist-table-row${line.label === selectedLabel ? ' active' : ''}" data-label="${line.label}" style="cursor:pointer;">
               <td style="padding:5px 7px;font-weight:700;">${line.label}</td>
               <td style="padding:5px 7px;">${line.z}</td>
               <td style="padding:5px 7px;">${line.x1}</td>
@@ -519,7 +533,18 @@ _JS_TEMPLATE = r"""
     selectedLabel = null;
     previewLine = null;
     dragStart = null;
+    isDragging = false;
     syncRecistUi();
+  }
+
+  function clearViewerAnnotations() {
+    clearAllRecist();
+    drawMode = false;
+    drawBtn.style.cssText = BTN_DEFAULT;
+    if (nv.closeDrawing) nv.closeDrawing();
+    nv.setDrawingEnabled(false);
+    if (nv.drawScene) nv.drawScene();
+    status.textContent = 'Cleared RECIST lines and mask';
   }
 
   function deleteRecistLine(label) {
@@ -560,6 +585,8 @@ _JS_TEMPLATE = r"""
       status.textContent = 'RECIST draw mode off';
     }
   };
+
+  clearBtn.onclick = clearViewerAnnotations;
 
   canvas.addEventListener('mousedown', (ev) => {
     if (!drawMode) return;
@@ -666,6 +693,7 @@ _JS_TEMPLATE = r"""
     loadImage,
     loadMask,
     addManualRecistLine,
+    clearViewerAnnotations,
     getRecistLine: () => recistLines.map(recistLineText).join('\n') || document.querySelector('#recist-line-box textarea, #recist-line-box input')?.value || '',
   };
 
