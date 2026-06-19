@@ -1037,6 +1037,7 @@ with gr.Blocks(title="RECISTto3D Gradio App") as demo:
 
 if __name__ == "__main__":
     demo.launch(
+        server_name="0.0.0.0",
         server_port=7871,
         css=APP_CSS,
         allowed_paths=[
