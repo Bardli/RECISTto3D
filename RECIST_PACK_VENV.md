@@ -50,7 +50,7 @@ uv pip install --python .venv/bin/python "setuptools>=77" wheel
 SAM2_BUILD_CUDA=0 uv pip install --python .venv/bin/python --no-build-isolation \
   -e ./MedSAM2 \
   -e ./nnInteractive \
-  pandas matplotlib huggingface_hub SimpleITK scipy opencv-python-headless
+  "gradio[mcp]" pandas matplotlib huggingface_hub SimpleITK scipy opencv-python-headless
 ```
 
 For CPU-only PyTorch, replace the PyTorch index URL with:

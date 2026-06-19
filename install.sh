@@ -49,7 +49,7 @@ echo "==> Installing local repos and runtime dependencies"
 SAM2_BUILD_CUDA=0 uv pip install --python .venv/bin/python --no-build-isolation \
   -e ./MedSAM2 \
   -e ./nnInteractive \
-  pandas matplotlib huggingface_hub SimpleITK scipy opencv-python-headless
+  "gradio[mcp]" pandas matplotlib huggingface_hub SimpleITK scipy opencv-python-headless
 
 echo "==> Downloading checkpoints"
 .venv/bin/python - <<'PY'

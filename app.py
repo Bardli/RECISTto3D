@@ -1043,4 +1043,6 @@ if __name__ == "__main__":
             str(EXAMPLE_IMAGE.parent),
             str(APP_DATA),
         ],
+        share=False,
+        mcp_server=True
     )
