@@ -23,6 +23,6 @@ outputs/
 *_smoke.npz
 
 .DS_Store
-
+.gradio/
 .cursor/
 tmp/

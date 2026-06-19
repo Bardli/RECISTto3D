@@ -220,6 +220,7 @@ _JS_TEMPLATE = r"""
   let dragStart = null;
   let previewLine = null;
   let selectedLabel = null;
+  let visibleMaskLabels = null;
   const RECIST_COLORS = ['#00ff8a', '#ffd166', '#4cc9f0', '#f72585', '#f77f00', '#b8f2e6', '#c77dff', '#90be6d'];
 
   const segLabelCmap = makeLabelColormap();
@@ -287,7 +288,7 @@ _JS_TEMPLATE = r"""
     if (activeView !== 0) return;
     const z = curSlice();
     recistLines
-      .filter(line => line.z === z)
+      .filter(line => line.z === z && isMaskLabelVisible(line.label))
       .forEach(line => {
         const [startScreen, endScreen] = lineScreenPointsFromVox(line);
         if (startScreen && endScreen) {
@@ -319,6 +320,41 @@ _JS_TEMPLATE = r"""
     syncWLFill();
   }
   wlLo.oninput = wlHi.oninput = applyWL;
+
+  function isMaskLabelVisible(label) {
+    return visibleMaskLabels === null || visibleMaskLabels.has(Number(label));
+  }
+
+  function applyMaskLabelVisibility() {
+    const cmap = makeLabelColormap();
+    for (let i = 0; i < cmap.I.length; i++) {
+      const label = cmap.I[i];
+      cmap.A[i] = label !== 0 && isMaskLabelVisible(label) ? 255 : 0;
+    }
+    nv.setDrawColormap(cmap);
+    nv.setDrawOpacity(0.7);
+    if (nv.drawScene) nv.drawScene();
+  }
+
+  function ensureMaskLabelVisible(label) {
+    if (visibleMaskLabels !== null) visibleMaskLabels.add(Number(label));
+  }
+
+  function forgetMaskLabel(label) {
+    if (visibleMaskLabels !== null) visibleMaskLabels.delete(Number(label));
+  }
+
+  function resetMaskLabelVisibility() {
+    visibleMaskLabels = null;
+  }
+
+  function syncMaskLabelVisibilityFromTable() {
+    visibleMaskLabels = new Set(
+      [...tablePanel.querySelectorAll('.mask-visible-check:checked')]
+        .map(item => Number(item.dataset.label))
+    );
+    applyMaskLabelVisibility();
+  }
 
   function curSlice() {
     return Math.round((nv.scene?.crosshairPos?.[2] ?? 0.5) * (nSlices - 1));
@@ -453,6 +489,7 @@ _JS_TEMPLATE = r"""
     const storedLine = { ...line, startScreen, endScreen };
     recistLines.push(storedLine);
     selectedLabel = line.label;
+    ensureMaskLabelVisible(line.label);
     if (jumpToLine && nv.volumes?.[0]) {
       jumpToRecistLine(storedLine);
     } else {
@@ -480,6 +517,7 @@ _JS_TEMPLATE = r"""
       <table class="recist-table" style="width:100%;border-collapse:collapse;min-width:620px;">
         <thead>
           <tr style="color:#ffffff;text-align:left;">
+            <th style="padding:5px 7px;">Show</th>
             <th style="padding:5px 7px;">Label</th>
             <th style="padding:5px 7px;">Z</th>
             <th style="padding:5px 7px;">X1</th>
@@ -494,6 +532,10 @@ _JS_TEMPLATE = r"""
         <tbody>
           ${recistLines.map(line => `
             <tr class="recist-table-row${line.label === selectedLabel ? ' active' : ''}" data-label="${line.label}" style="cursor:pointer;">
+              <td style="padding:5px 7px;">
+                <input class="mask-visible-check" type="checkbox" data-label="${line.label}" ${isMaskLabelVisible(line.label) ? 'checked' : ''}
+                  title="Show mask and RECIST line ${line.label}" style="accent-color:#7b6cf0;cursor:pointer;">
+              </td>
               <td style="padding:5px 7px;font-weight:700;">${line.label}</td>
               <td style="padding:5px 7px;">${line.z}</td>
               <td style="padding:5px 7px;">${line.x1}</td>
@@ -520,6 +562,14 @@ _JS_TEMPLATE = r"""
         deleteRecistLine(Number(btn.dataset.label));
       });
     });
+    tablePanel.querySelectorAll('.mask-visible-check').forEach(input => {
+      input.addEventListener('click', ev => ev.stopPropagation());
+      input.addEventListener('change', ev => {
+        ev.stopPropagation();
+        syncMaskLabelVisibilityFromTable();
+        renderRecistOverlays();
+      });
+    });
   }
 
   function syncRecistUi() {
@@ -534,6 +584,7 @@ _JS_TEMPLATE = r"""
     previewLine = null;
     dragStart = null;
     isDragging = false;
+    resetMaskLabelVisibility();
     syncRecistUi();
   }
 
@@ -550,6 +601,8 @@ _JS_TEMPLATE = r"""
   function deleteRecistLine(label) {
     recistLines = recistLines.filter(line => line.label !== label);
     if (selectedLabel === label) selectedLabel = null;
+    forgetMaskLabel(label);
+    applyMaskLabelVisibility();
     syncRecistUi();
     status.textContent = `RECIST label ${label} deleted`;
   }
@@ -647,6 +700,7 @@ _JS_TEMPLATE = r"""
     };
     recistLines.push(line);
     selectedLabel = label;
+    ensureMaskLabelVisible(label);
     previewLine = null;
     syncRecistUi();
     status.textContent = 'RECIST: ' + recistLineText(line);
@@ -661,8 +715,7 @@ _JS_TEMPLATE = r"""
     await paintStatus('Loading image...');
     await nv.loadVolumes([{ url: imageUrl }]);
     applyOrientation();
-    nv.setDrawColormap(segLabelCmap);
-    nv.setDrawOpacity(0.7);
+    applyMaskLabelVisibility();
     nv.setDrawingEnabled(false);
     const vol = nv.volumes[0];
     nSlices = (vol.dims && vol.dims[3]) ? vol.dims[3] : 1;
@@ -680,11 +733,10 @@ _JS_TEMPLATE = r"""
     if (!maskUrl) return;
     await paintStatus('Loading mask...');
     if (nv.closeDrawing) nv.closeDrawing();
-    nv.setDrawColormap(segLabelCmap);
-    nv.setDrawOpacity(0.7);
+    applyMaskLabelVisibility();
     await nv.loadDrawingFromUrl(maskUrl, false);
     nv.setDrawingEnabled(false);
-    nv.drawScene();
+    applyMaskLabelVisibility();
     status.textContent = 'Mask loaded';
   }
 
