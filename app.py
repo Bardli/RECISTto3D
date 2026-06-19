@@ -296,7 +296,7 @@ _JS_TEMPLATE = r"""
           addOverlayLine(startScreen, endScreen, line.color, line.label === selectedLabel ? 5 : 3);
         }
       });
-    if (previewLine && previewLine.z === z) addOverlayLine(previewLine.startScreen, previewLine.endScreen, previewLine.color, 3);
+    if (previewLine) addOverlayLine(previewLine.startScreen, previewLine.endScreen, previewLine.color, 4);
   }
 
   function pct(v) { return (v - WL_MIN) / WL_SPAN * 100; }
@@ -598,7 +598,7 @@ _JS_TEMPLATE = r"""
     isDragging = true;
     dragStart = pt;
     previewLine = {
-      z: dragStart.vox[2],
+      z: curSlice(),
       color: RECIST_COLORS[recistLines.length % RECIST_COLORS.length],
       startScreen: dragStart.screen,
       endScreen: dragStart.screen,
@@ -612,9 +612,8 @@ _JS_TEMPLATE = r"""
     ev.stopPropagation();
     const pt = pointFromEvent(ev);
     if (pt) {
-      const z = Math.round((dragStart.vox[2] + pt.vox[2]) / 2);
       previewLine = {
-        z,
+        z: curSlice(),
         color: RECIST_COLORS[recistLines.length % RECIST_COLORS.length],
         startScreen: dragStart.screen,
         endScreen: pt.screen,
@@ -633,7 +632,7 @@ _JS_TEMPLATE = r"""
       renderRecistOverlays();
       return;
     }
-    const z = Math.round((dragStart.vox[2] + pt.vox[2]) / 2);
+    const z = curSlice();
     const label = nextRecistLabel();
     const line = {
       label,
