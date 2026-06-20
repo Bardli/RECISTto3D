@@ -641,12 +641,13 @@ def infer_with_loaded_models(
     window: str | None = None,
     nninteractive_prompt: str = "5_points",
     verbose: bool = False,
-    run_concurrent: bool = True,
+    run_concurrent: bool = False,
 ) -> list[ModelResult]:
     """Run inference with models already returned by ``load_all_models``.
 
-    Loaded model objects stay in this process, so concurrent execution uses
-    threads rather than worker processes.
+    Loaded model objects stay in this process. The default is sequential
+    execution because repeated threaded calls can retain per-thread runtime
+    caches and raise process RSS in Gradio-style long-running services.
     """
 
     configs = _build_configs(

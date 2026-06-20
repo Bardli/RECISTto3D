@@ -38,6 +38,7 @@ results = infer_with_loaded_models(
     output_prefix="case_001",
     intensity="window",
     window="-175,275",
+    run_concurrent=False,
 )
 
 # 3. 拿到三个模型的 NIfTI 输出
@@ -87,6 +88,7 @@ results = infer_with_loaded_models(
     output_prefix="case_001",
     intensity="window",
     window="-175,275",
+    run_concurrent=False,
 )
 ```
 
@@ -149,6 +151,7 @@ results = infer_with_loaded_models(
     output_prefix="prediction",
     intensity="window",
     window=_resolve_window(window_preset, window_width, window_level),
+    run_concurrent=False,
 )
 
 mask_by_model = {r.model: r.output_nifti for r in results}
@@ -298,7 +301,7 @@ models.metadata
 
 ### 3.2 `infer_with_loaded_models(...)`
 
-作用：使用已经加载好的模型推理，不重复加载 checkpoint。
+作用：使用已经加载好的模型推理，不重复加载 checkpoint。长时间运行的 Gradio 服务建议保持默认的顺序执行，避免重复创建线程带来的运行时缓存增长。
 
 ```python
 results = infer_with_loaded_models(
