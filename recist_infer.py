@@ -564,10 +564,17 @@ def load_medsam2_predictor(args):
     return predictor, str(ckpt_path), name, device
 
 
-def infer_medsam2(image: np.ndarray, recist: np.ndarray, spacing: np.ndarray, args) -> InferenceResult:
+def run_medsam2_loop(image, recist, spacing, args, predictor, *, rng):
+    """Shared MedSAM2 inference loop used by both the CLI path
+    (:func:`infer_medsam2`) and the cached-model path
+    (``_infer_medsam2_with_loaded_model``).
+
+    Takes an already-built ``predictor`` and returns ``(segs, boxes_array,
+    labels)``. It does not load a model or assemble metadata; callers keep
+    those concerns so their differing behaviour stays intact.
+    """
     import torch
 
-    rng = np.random.RandomState(args.seed)
     prompt_specs = prompt_specs_from_recist(recist, spacing, args, rng, target="box")
     if not prompt_specs:
         raise ValueError("No prompts were provided")
@@ -575,63 +582,70 @@ def infer_medsam2(image: np.ndarray, recist: np.ndarray, spacing: np.ndarray, ar
     volume_uint8 = ensure_medsam2_uint8(image, args.intensity, args.window)
     frames, video_height, video_width = medsam2_preprocess(volume_uint8)
 
-    with pushd(MEDSAM2_ROOT):
-        predictor, ckpt_path, model_name, device = load_medsam2_predictor(args)
+    segs = np.zeros(image.shape, dtype=np.uint16)
+    boxes = []
+    labels = [prompt.label for prompt in prompt_specs]
 
-        segs = np.zeros(image.shape, dtype=np.uint16)
-        boxes = []
-        labels = [prompt.label for prompt in prompt_specs]
+    for prompt in prompt_specs:
+        z_min, z_max = medsam2_z_range_for_prompt(prompt)
+        z_mid = prompt.z - z_min
+        cropped_frames = frames[z_min : z_max + 1]
 
-        for prompt in prompt_specs:
-            z_min, z_max = medsam2_z_range_for_prompt(prompt)
-            z_mid = prompt.z - z_min
-            cropped_frames = frames[z_min : z_max + 1]
+        with torch.inference_mode():
+            state = predictor.init_state(cropped_frames, video_height, video_width)
+            if prompt.kind == "box":
+                box_2d = prompt.box_xyxy.astype(np.float32)
+                boxes.append([box_2d[0], box_2d[1], prompt.z, box_2d[2], box_2d[3], prompt.z])
+                _, _, out_mask_logits = predictor.add_new_points_or_box(
+                    inference_state=state,
+                    frame_idx=z_mid,
+                    obj_id=1,
+                    box=box_2d,
+                )
+            elif prompt.kind == "points":
+                points = prompt.points_xy.astype(np.float32)
+                labels_arr = np.ones(len(points), dtype=np.int32)
+                _, _, out_mask_logits = predictor.add_new_points_or_box(
+                    inference_state=state,
+                    frame_idx=z_mid,
+                    obj_id=1,
+                    points=points,
+                    labels=labels_arr,
+                )
+            else:
+                raise ValueError(f"Unsupported prompt kind: {prompt.kind}")
 
-            with torch.inference_mode():
-                state = predictor.init_state(cropped_frames, video_height, video_width)
-                if prompt.kind == "box":
-                    box_2d = prompt.box_xyxy.astype(np.float32)
-                    boxes.append([box_2d[0], box_2d[1], prompt.z, box_2d[2], box_2d[3], prompt.z])
-                    _, _, out_mask_logits = predictor.add_new_points_or_box(
-                        inference_state=state,
-                        frame_idx=z_mid,
-                        obj_id=1,
-                        box=box_2d,
-                    )
-                elif prompt.kind == "points":
-                    points = prompt.points_xy.astype(np.float32)
-                    labels_arr = np.ones(len(points), dtype=np.int32)
-                    _, _, out_mask_logits = predictor.add_new_points_or_box(
-                        inference_state=state,
-                        frame_idx=z_mid,
-                        obj_id=1,
-                        points=points,
-                        labels=labels_arr,
-                    )
-                else:
-                    raise ValueError(f"Unsupported prompt kind: {prompt.kind}")
+            mask_prompt = (out_mask_logits[0] > 0.0).squeeze(0).cpu().numpy().astype(np.uint8)
+            _, _, masks = predictor.add_new_mask(state, frame_idx=z_mid, obj_id=1, mask=mask_prompt)
+            segs[prompt.z, (masks[0] > 0.0).cpu().numpy()[0]] = prompt.label
 
-                mask_prompt = (out_mask_logits[0] > 0.0).squeeze(0).cpu().numpy().astype(np.uint8)
-                _, _, masks = predictor.add_new_mask(state, frame_idx=z_mid, obj_id=1, mask=mask_prompt)
-                segs[prompt.z, (masks[0] > 0.0).cpu().numpy()[0]] = prompt.label
+            for out_frame_idx, _, out_mask_logits in predictor.propagate_in_video(
+                state, start_frame_idx=z_mid, reverse=False
+            ):
+                segs[z_min + out_frame_idx, (out_mask_logits[0] > 0.0).cpu().numpy()[0]] = prompt.label
 
-                for out_frame_idx, _, out_mask_logits in predictor.propagate_in_video(
-                    state, start_frame_idx=z_mid, reverse=False
-                ):
-                    segs[z_min + out_frame_idx, (out_mask_logits[0] > 0.0).cpu().numpy()[0]] = prompt.label
+            predictor.reset_state(state)
+            state = predictor.init_state(cropped_frames, video_height, video_width)
+            predictor.add_new_mask(state, frame_idx=z_mid, obj_id=1, mask=mask_prompt)
 
-                predictor.reset_state(state)
-                state = predictor.init_state(cropped_frames, video_height, video_width)
-                predictor.add_new_mask(state, frame_idx=z_mid, obj_id=1, mask=mask_prompt)
+            for out_frame_idx, _, out_mask_logits in predictor.propagate_in_video(
+                state, start_frame_idx=z_mid, reverse=True
+            ):
+                segs[z_min + out_frame_idx, (out_mask_logits[0] > 0.0).cpu().numpy()[0]] = prompt.label
 
-                for out_frame_idx, _, out_mask_logits in predictor.propagate_in_video(
-                    state, start_frame_idx=z_mid, reverse=True
-                ):
-                    segs[z_min + out_frame_idx, (out_mask_logits[0] > 0.0).cpu().numpy()[0]] = prompt.label
-
-                predictor.reset_state(state)
+            predictor.reset_state(state)
 
     boxes_array = np.asarray(boxes, dtype=np.float32).reshape((-1, 6)) if boxes else np.zeros((0, 6), dtype=np.float32)
+    return segs, boxes_array, labels
+
+
+def infer_medsam2(image: np.ndarray, recist: np.ndarray, spacing: np.ndarray, args) -> InferenceResult:
+    rng = np.random.RandomState(args.seed)
+
+    with pushd(MEDSAM2_ROOT):
+        predictor, ckpt_path, model_name, device = load_medsam2_predictor(args)
+        segs, boxes_array, labels = run_medsam2_loop(image, recist, spacing, args, predictor, rng=rng)
+
     metadata = {
         "model": args.model,
         "model_name": model_name,
