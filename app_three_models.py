@@ -367,6 +367,25 @@ _JS_TEMPLATE = r"""
     if (nv.drawScene) nv.drawScene();
   }
 
+  function resetModelMaskChecks() {
+    maskControls.querySelectorAll('.model-mask-check').forEach(input => {
+      input.checked = true;
+    });
+  }
+
+  function clearModelMasks() {
+    const indices = Object.values(maskVolumeIndexByKey)
+      .filter(index => Number.isInteger(index) && index > 0)
+      .sort((a, b) => b - a);
+    indices.forEach(index => {
+      const vol = nv.volumes?.[index];
+      if (vol && typeof nv.removeVolume === 'function') nv.removeVolume(vol);
+    });
+    maskVolumeIndexByKey = {};
+    resetModelMaskChecks();
+    if (nv.updateGLVolume) nv.updateGLVolume(); else if (nv.drawScene) nv.drawScene();
+  }
+
   function curSlice() {
     return Math.round((nv.scene?.crosshairPos?.[2] ?? 0.5) * (nSlices - 1));
   }
@@ -600,10 +619,9 @@ _JS_TEMPLATE = r"""
 
   function clearViewerAnnotations() {
     clearAllRecist();
-    drawMode = false;
-    drawBtn.style.cssText = BTN_DEFAULT;
+    clearModelMasks();
     clearMaskDrawing();
-    status.textContent = 'Cleared RECIST lines';
+    status.textContent = 'Cleared RECIST lines and model overlays';
   }
 
   function deleteRecistLine(label) {
