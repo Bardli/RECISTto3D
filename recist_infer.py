@@ -552,9 +552,7 @@ def load_medsam2_predictor(args):
             )
         cfg_path = "/" + str(MEDSAM2_ROOT / "efficient_track_anything" / "configs" / cfg_name)
         device = args.device or "cpu"
-        hydra_overrides = []
-        if str(device).startswith("cpu"):
-            hydra_overrides.append("++model.compile_image_encoder=False")
+        hydra_overrides = ["++model.compile_image_encoder=False"]
         predictor = build_efficienttam_video_predictor_npz(
             cfg_path,
             ckpt_path,

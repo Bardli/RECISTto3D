@@ -236,7 +236,7 @@ _JS_TEMPLATE = r"""
   const segLabelCmap = makeLabelColormap();
   const nv = new Niivue({
     backColor: [0.05, 0.05, 0.1, 1],
-    isResizeCanvas: false,
+    isResizeCanvas: true,
     loadingText: '',
   });
   await nv.attachTo('niivue-gl');
