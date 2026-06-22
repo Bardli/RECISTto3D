@@ -387,6 +387,14 @@ _JS_TEMPLATE = r"""
 
   function setView(t) {
     activeView = t;
+    if (t !== 0 && drawMode) {
+      drawMode = false;
+      isDragging = false;
+      dragStart = null;
+      previewLine = null;
+      drawBtn.style.cssText = BTN_DEFAULT;
+      status.textContent = 'RECIST draw mode off outside axial view';
+    }
     if (t === 3) {
       canvas.width = 960; canvas.height = 960;
     } else {
@@ -650,10 +658,9 @@ _JS_TEMPLATE = r"""
   clearBtn.onclick = clearViewerAnnotations;
 
   canvas.addEventListener('mousedown', (ev) => {
-    if (!drawMode) return;
+    if (!drawMode || activeView !== 0) return;
     ev.preventDefault();
     ev.stopPropagation();
-    setView(0);
     const pt = pointFromEvent(ev);
     if (!pt) return;
     isDragging = true;
@@ -668,7 +675,7 @@ _JS_TEMPLATE = r"""
   }, true);
 
   canvas.addEventListener('mousemove', (ev) => {
-    if (!drawMode || !isDragging || !dragStart) return;
+    if (!drawMode || activeView !== 0 || !isDragging || !dragStart) return;
     ev.preventDefault();
     ev.stopPropagation();
     const pt = pointFromEvent(ev);
@@ -684,7 +691,7 @@ _JS_TEMPLATE = r"""
   }, true);
 
   window.addEventListener('mouseup', (ev) => {
-    if (!drawMode || !isDragging || !dragStart) return;
+    if (!drawMode || activeView !== 0 || !isDragging || !dragStart) return;
     ev.preventDefault();
     const pt = pointFromEvent(ev);
     isDragging = false;
