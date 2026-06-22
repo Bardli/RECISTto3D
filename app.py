@@ -83,6 +83,16 @@ _JS_TEMPLATE = r"""
   overlay.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;z-index:2;';
   wrap.appendChild(overlay);
 
+  const loadingOverlay = document.createElement('div');
+  loadingOverlay.style.cssText = `
+    position:absolute;left:0;top:0;display:none;align-items:center;justify-content:center;
+    z-index:3;pointer-events:none;background:rgba(5,8,18,0.55);
+    color:#ffffff;font:600 18px/1.4 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    text-shadow:0 1px 4px rgba(0,0,0,0.75);
+  `;
+  loadingOverlay.textContent = 'Loading...';
+  wrap.appendChild(loadingOverlay);
+
   if (!document.getElementById('nv-range-style')) {
     const s = document.createElement('style');
     s.id = 'nv-range-style';
@@ -258,6 +268,8 @@ _JS_TEMPLATE = r"""
     overlay.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`);
     overlay.style.width = rect.width + 'px';
     overlay.style.height = rect.height + 'px';
+    loadingOverlay.style.width = rect.width + 'px';
+    loadingOverlay.style.height = rect.height + 'px';
   }
 
   function addOverlayLine(start, end, color, strokeWidth = 3) {
@@ -588,13 +600,17 @@ _JS_TEMPLATE = r"""
     syncRecistUi();
   }
 
+  function clearMaskDrawing() {
+    if (nv.closeDrawing) nv.closeDrawing();
+    nv.setDrawingEnabled(false);
+    if (nv.drawScene) nv.drawScene();
+  }
+
   function clearViewerAnnotations() {
     clearAllRecist();
     drawMode = false;
     drawBtn.style.cssText = BTN_DEFAULT;
-    if (nv.closeDrawing) nv.closeDrawing();
-    nv.setDrawingEnabled(false);
-    if (nv.drawScene) nv.drawScene();
+    clearMaskDrawing();
     status.textContent = 'Cleared RECIST lines and mask';
   }
 
@@ -621,6 +637,16 @@ _JS_TEMPLATE = r"""
   function paintStatus(message) {
     status.textContent = message;
     return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }
+
+  function showLoading(message = 'Loading...') {
+    loadingOverlay.textContent = message;
+    updateOverlaySize();
+    loadingOverlay.style.display = 'flex';
+  }
+
+  function hideLoading() {
+    loadingOverlay.style.display = 'none';
   }
 
   function applyOrientation() {
@@ -712,32 +738,46 @@ _JS_TEMPLATE = r"""
       return;
     }
     clearAllRecist();
-    await paintStatus('Loading image...');
-    await nv.loadVolumes([{ url: imageUrl }]);
-    applyOrientation();
-    applyMaskLabelVisibility();
-    nv.setDrawingEnabled(false);
-    const vol = nv.volumes[0];
-    nSlices = (vol.dims && vol.dims[3]) ? vol.dims[3] : 1;
-    sliceSlider.max = Math.max(0, nSlices - 1);
-    wlLo.value = Math.round(vol.cal_min ?? -898);
-    wlHi.value = Math.round(vol.cal_max ?? 401);
-    wlLbl.textContent = Math.round(vol.cal_min ?? +wlLo.value) + '..' + Math.round(vol.cal_max ?? +wlHi.value);
-    syncWLFill();
-    setView(0);
-    if (maskUrl) await loadMask(maskUrl);
-    status.textContent = 'Image loaded. Draw RECIST lines.';
+    clearMaskDrawing();
+    showLoading('Loading image...');
+    try {
+      await paintStatus('Loading image...');
+      await nv.loadVolumes([{ url: imageUrl }]);
+      applyOrientation();
+      applyMaskLabelVisibility();
+      nv.setDrawingEnabled(false);
+      const vol = nv.volumes[0];
+      nSlices = (vol.dims && vol.dims[3]) ? vol.dims[3] : 1;
+      sliceSlider.max = Math.max(0, nSlices - 1);
+      wlLo.value = Math.round(vol.cal_min ?? -898);
+      wlHi.value = Math.round(vol.cal_max ?? 401);
+      wlLbl.textContent = Math.round(vol.cal_min ?? +wlLo.value) + '..' + Math.round(vol.cal_max ?? +wlHi.value);
+      syncWLFill();
+      setView(0);
+      if (maskUrl) {
+        showLoading('Loading mask...');
+        await loadMask(maskUrl, false);
+      }
+      status.textContent = 'Image loaded. Draw RECIST lines.';
+    } finally {
+      hideLoading();
+    }
   }
 
-  async function loadMask(maskUrl) {
+  async function loadMask(maskUrl, manageLoading = true) {
     if (!maskUrl) return;
-    await paintStatus('Loading mask...');
-    if (nv.closeDrawing) nv.closeDrawing();
-    applyMaskLabelVisibility();
-    await nv.loadDrawingFromUrl(maskUrl, false);
-    nv.setDrawingEnabled(false);
-    applyMaskLabelVisibility();
-    status.textContent = 'Mask loaded';
+    if (manageLoading) showLoading('Loading mask...');
+    try {
+      await paintStatus('Loading mask...');
+      if (nv.closeDrawing) nv.closeDrawing();
+      applyMaskLabelVisibility();
+      await nv.loadDrawingFromUrl(maskUrl, false);
+      nv.setDrawingEnabled(false);
+      applyMaskLabelVisibility();
+      status.textContent = 'Mask loaded';
+    } finally {
+      if (manageLoading) hideLoading();
+    }
   }
 
   window.recistTo3DViewer = {
@@ -813,7 +853,14 @@ def _copy_upload(file_path: str) -> Path:
 
 def prepare_uploaded_image(file_path: str | None):
     if not file_path:
-        raise gr.Error("Please select a NIfTI file first.")
+        return (
+            "",
+            "",
+            "",
+            "",
+            "Please select a NIfTI file first.",
+            "",
+        )
     image_path = _copy_upload(file_path)
     return (
         str(image_path),
