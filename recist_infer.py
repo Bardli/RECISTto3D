@@ -765,17 +765,16 @@ def infer_nninteractive(image: np.ndarray, recist: np.ndarray, spacing: np.ndarr
         prediction_zoom_out_factor = None
 
         if prompt.kind == "box":
-            import math as _math
-
             x1, y1, x2, y2 = prompt.box_xyxy.astype(int)
-            spacing_z = float(spacing[0])
-            spacing_y = float(spacing[1])
-            spacing_x = float(spacing[2])
-            diameter_mm = _math.hypot((int(y2) - int(y1)) * spacing_y, (int(x2) - int(x1)) * spacing_x)
-            half_dz = max(10, int(round(diameter_mm / max(spacing_z, 0.1) / 2)))
-            z_lo = max(0, int(prompt.z) - half_dz)
-            z_hi = min(raw_image.shape[0], int(prompt.z) + half_dz + 1)
-            bbox_dhw = [[z_lo, z_hi], [int(y1), int(y2) + 1], [int(x1), int(x2) + 1]]
+            # nnInteractive pretrained models only support 2D bounding boxes:
+            # exactly one dimension must be a single slice ([d, d+1]). RECIST is
+            # itself a 2D measurement on slice prompt.z, so the box stays on that
+            # slice. A multi-slice z-extent makes add_bbox_interaction take the
+            # (worse, often unsupported) bbox3d path and discards RECIST's 2D
+            # semantics. See nnInteractive readme.md and
+            # Interctive_Model_benchmarking/docs/nninteractive_bbox_2d_fix.md.
+            z_mid = int(prompt.z)
+            bbox_dhw = [[z_mid, z_mid + 1], [int(y1), int(y2) + 1], [int(x1), int(x2) + 1]]
             boxes.append([x1, y1, prompt.z, x2, y2, prompt.z])
             session.add_bbox_interaction(bbox_dhw, include_interaction=True, run_prediction=False)
             prediction_center = session.new_interaction_centers[-1]
