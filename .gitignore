@@ -14,6 +14,10 @@ checkpoints/
 examples/*
 !examples/
 !examples/eay_demo_lung_cancer_image.nii.gz
+!examples/kidney_cancer.nii.gz
+!examples/liver_cancer.nii.gz
+!examples/lung_cancer.nii.gz
+!examples/pancreas_cancer.nii.gz
 
 # Runtime outputs.
 outputs/

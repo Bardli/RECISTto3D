@@ -18,7 +18,13 @@ from run_three_models_parallel import MODELS, load_all_models, run_three_models
 
 
 ROOT = Path(__file__).resolve().parent
-EXAMPLE_IMAGE = ROOT / "examples" / "eay_demo_lung_cancer_image.nii.gz"
+EXAMPLES_DIR = ROOT / "examples"
+EXAMPLE_IMAGES = {
+    "Kidney cancer": EXAMPLES_DIR / "kidney_cancer.nii.gz",
+    "Liver cancer": EXAMPLES_DIR / "liver_cancer.nii.gz",
+    "Lung cancer": EXAMPLES_DIR / "lung_cancer.nii.gz",
+    "Pancreas cancer": EXAMPLES_DIR / "pancreas_cancer.nii.gz",
+}
 APP_DATA = ROOT / "tmp"/".gradio_recistto3d"
 UPLOAD_DIR = APP_DATA / "uploads"
 RUN_DIR = APP_DATA / "runs"
@@ -882,7 +888,7 @@ def _redact_log_paths(text: str, extra_paths: list[Path] | None = None) -> str:
         (str(RUN_DIR.resolve()), "<RUN_DIR>"),
         (str(UPLOAD_DIR.resolve()), "<UPLOAD_DIR>"),
         (str(APP_DATA.resolve()), "<APP_DATA>"),
-        (str(EXAMPLE_IMAGE.parent.resolve()), "<EXAMPLES>"),
+        (str(EXAMPLES_DIR.resolve()), "<EXAMPLES>"),
         (str(ROOT.resolve()), "<ROOT>"),
         (str(Path.home().resolve()), "<HOME>"),
     ]
@@ -946,12 +952,13 @@ def prepare_uploaded_image(file_path: str | None):
     )
 
 
-def load_example_image():
-    if not EXAMPLE_IMAGE.exists():
-        raise gr.Error(f"Example file not found: {EXAMPLE_IMAGE}")
+def load_example_image(example_path: str):
+    image = Path(example_path)
+    if not image.exists():
+        raise gr.Error(f"Example file not found: {image}")
     return (
-        str(EXAMPLE_IMAGE),
-        _file_url(EXAMPLE_IMAGE),
+        str(image),
+        _file_url(image),
         "",
         "",
         "",
@@ -959,7 +966,7 @@ def load_example_image():
         "",
         "",
         "",
-        f"Example image loaded: {EXAMPLE_IMAGE.name}",
+        f"Example image loaded: {image.name}",
         "",
     )
 
@@ -1190,7 +1197,12 @@ with gr.Blocks(title="RECISTto3D Three-Model Gradio App") as demo:
     with gr.Row():
         with gr.Column(scale=1):
             upload = gr.File(label="Upload NIfTI (.nii / .nii.gz)", type="filepath")
-            load_example = gr.Button("Load example", variant="secondary")
+            with gr.Row():
+                load_kidney = gr.Button("Kidney cancer", variant="secondary")
+                load_liver = gr.Button("Liver cancer", variant="secondary")
+            with gr.Row():
+                load_lung = gr.Button("Lung cancer", variant="secondary")
+                load_pancreas = gr.Button("Pancreas cancer", variant="secondary")
             recist_line = gr.Textbox(
                 label="RECIST lines (one per row: z,x1,y1,x2,y2,label)",
                 placeholder="Automatically filled after drawing RECIST lines on the axial NiiVue image",
@@ -1248,28 +1260,34 @@ with gr.Blocks(title="RECISTto3D Three-Model Gradio App") as demo:
         js="(imageUrl) => { window.recistTo3DViewer?.loadImage(imageUrl); return []; }",
     )
 
-    load_example.click(
-        load_example_image,
-        inputs=None,
-        outputs=[
-            image_path_state,
-            image_url_state,
-            eff_mask_path_state,
-            medsam2_mask_path_state,
-            nninteractive_mask_path_state,
-            eff_mask_url_state,
-            medsam2_mask_url_state,
-            nninteractive_mask_url_state,
-            recist_line,
-            status,
-            log,
-        ],
-    ).then(
-        fn=None,
-        inputs=image_url_state,
-        outputs=None,
-        js="(imageUrl) => { window.recistTo3DViewer?.loadImage(imageUrl); return []; }",
-    )
+    for button, example_path in [
+        (load_kidney, EXAMPLE_IMAGES["Kidney cancer"]),
+        (load_liver, EXAMPLE_IMAGES["Liver cancer"]),
+        (load_lung, EXAMPLE_IMAGES["Lung cancer"]),
+        (load_pancreas, EXAMPLE_IMAGES["Pancreas cancer"]),
+    ]:
+        button.click(
+            load_example_image,
+            inputs=gr.State(str(example_path)),
+            outputs=[
+                image_path_state,
+                image_url_state,
+                eff_mask_path_state,
+                medsam2_mask_path_state,
+                nninteractive_mask_path_state,
+                eff_mask_url_state,
+                medsam2_mask_url_state,
+                nninteractive_mask_url_state,
+                recist_line,
+                status,
+                log,
+            ],
+        ).then(
+            fn=None,
+            inputs=image_url_state,
+            outputs=None,
+            js="(imageUrl) => { window.recistTo3DViewer?.loadImage(imageUrl); return []; }",
+        )
 
     manual_add.click(
         fn=None,
@@ -1335,7 +1353,7 @@ if __name__ == "__main__":
         server_port=7872,
         css=APP_CSS,
         allowed_paths=[
-            str(EXAMPLE_IMAGE.parent),
+            str(EXAMPLES_DIR),
             str(APP_DATA),
         ],
         share=False,
