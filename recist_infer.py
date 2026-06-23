@@ -12,7 +12,7 @@ import json
 import os
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -434,12 +434,6 @@ def prompt_specs_from_recist(
     return specs
 
 
-def medsam2_z_range_for_prompt(prompt: PromptSpec) -> tuple[int, int]:
-    if prompt.z_min is None or prompt.z_max is None:
-        return int(prompt.z), int(prompt.z)
-    return int(prompt.z_min), int(prompt.z_max)
-
-
 def ensure_medsam2_uint8(image: np.ndarray, mode: str, window: str | None) -> np.ndarray:
     image = np.asarray(image)
     if mode == "preserve":
@@ -564,16 +558,30 @@ def load_medsam2_predictor(args):
     return predictor, str(ckpt_path), name, device
 
 
-def run_medsam2_loop(image, recist, spacing, args, predictor, *, rng):
+def run_medsam2_loop(image, recist, spacing, args, predictor, device, *, rng):
     """Shared MedSAM2 inference loop used by both the CLI path
     (:func:`infer_medsam2`) and the cached-model path
     (``_infer_medsam2_with_loaded_model``).
 
-    Takes an already-built ``predictor`` and returns ``(segs, boxes_array,
-    labels)``. It does not load a model or assemble metadata; callers keep
-    those concerns so their differing behaviour stays intact.
+    Takes an already-built ``predictor`` and the ``device`` it lives on, and
+    returns ``(segs, boxes_array, labels)``. It does not load a model or
+    assemble metadata; callers keep those concerns so their differing
+    behaviour stays intact.
+
+    Mirrors the official ``medsam2_infer_CT_lesion_npz_recist.py`` reference:
+    high matmul precision, seeded torch/cuda/numpy RNG, the whole volume fed
+    to ``init_state`` (not a diameter-cropped z-slab), and a bf16 autocast on
+    CUDA.
     """
     import torch
+
+    # Match the official reference's numerical setup. matmul precision is a
+    # global toggle; setting it here (idempotent) keeps torch lazily imported.
+    torch.set_float32_matmul_precision("high")
+    torch.manual_seed(args.seed)
+    if str(device).startswith("cuda"):
+        torch.cuda.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
     prompt_specs = prompt_specs_from_recist(recist, spacing, args, rng, target="box")
     if not prompt_specs:
@@ -581,18 +589,26 @@ def run_medsam2_loop(image, recist, spacing, args, predictor, *, rng):
 
     volume_uint8 = ensure_medsam2_uint8(image, args.intensity, args.window)
     frames, video_height, video_width = medsam2_preprocess(volume_uint8)
+    frames = frames.to(device)
+
+    # bf16 autocast on CUDA only; CPU bf16 autocast is unsupported for many
+    # ops, so fall back to a no-op context there.
+    if str(device).startswith("cuda"):
+        autocast_ctx = torch.autocast("cuda", dtype=torch.bfloat16)
+    else:
+        autocast_ctx = nullcontext()
 
     segs = np.zeros(image.shape, dtype=np.uint16)
     boxes = []
     labels = [prompt.label for prompt in prompt_specs]
 
+    # Feed the whole volume, matching the official reference (z_min=0,
+    # z_max=D-1), rather than a diameter-derived z-slab.
     for prompt in prompt_specs:
-        z_min, z_max = medsam2_z_range_for_prompt(prompt)
-        z_mid = prompt.z - z_min
-        cropped_frames = frames[z_min : z_max + 1]
+        z_mid = prompt.z
 
-        with torch.inference_mode():
-            state = predictor.init_state(cropped_frames, video_height, video_width)
+        with torch.inference_mode(), autocast_ctx:
+            state = predictor.init_state(frames, video_height, video_width)
             if prompt.kind == "box":
                 box_2d = prompt.box_xyxy.astype(np.float32)
                 boxes.append([box_2d[0], box_2d[1], prompt.z, box_2d[2], box_2d[3], prompt.z])
@@ -622,16 +638,16 @@ def run_medsam2_loop(image, recist, spacing, args, predictor, *, rng):
             for out_frame_idx, _, out_mask_logits in predictor.propagate_in_video(
                 state, start_frame_idx=z_mid, reverse=False
             ):
-                segs[z_min + out_frame_idx, (out_mask_logits[0] > 0.0).cpu().numpy()[0]] = prompt.label
+                segs[out_frame_idx, (out_mask_logits[0] > 0.0).cpu().numpy()[0]] = prompt.label
 
             predictor.reset_state(state)
-            state = predictor.init_state(cropped_frames, video_height, video_width)
+            state = predictor.init_state(frames, video_height, video_width)
             predictor.add_new_mask(state, frame_idx=z_mid, obj_id=1, mask=mask_prompt)
 
             for out_frame_idx, _, out_mask_logits in predictor.propagate_in_video(
                 state, start_frame_idx=z_mid, reverse=True
             ):
-                segs[z_min + out_frame_idx, (out_mask_logits[0] > 0.0).cpu().numpy()[0]] = prompt.label
+                segs[out_frame_idx, (out_mask_logits[0] > 0.0).cpu().numpy()[0]] = prompt.label
 
             predictor.reset_state(state)
 
@@ -644,7 +660,7 @@ def infer_medsam2(image: np.ndarray, recist: np.ndarray, spacing: np.ndarray, ar
 
     with pushd(MEDSAM2_ROOT):
         predictor, ckpt_path, model_name, device = load_medsam2_predictor(args)
-        segs, boxes_array, labels = run_medsam2_loop(image, recist, spacing, args, predictor, rng=rng)
+        segs, boxes_array, labels = run_medsam2_loop(image, recist, spacing, args, predictor, device, rng=rng)
 
     metadata = {
         "model": args.model,

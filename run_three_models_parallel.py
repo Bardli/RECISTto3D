@@ -413,7 +413,9 @@ def _infer_medsam2_with_loaded_model(image, recist, spacing, args: Namespace, lo
 
     rng = np.random.RandomState(args.seed)
     predictor = loaded_model.handle
-    segs, boxes_array, labels = run_medsam2_loop(image, recist, spacing, args, predictor, rng=rng)
+    segs, boxes_array, labels = run_medsam2_loop(
+        image, recist, spacing, args, predictor, loaded_model.device, rng=rng
+    )
 
     metadata = dict(loaded_model.metadata)
     metadata.update(
