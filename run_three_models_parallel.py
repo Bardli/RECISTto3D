@@ -88,6 +88,131 @@ class _ModelConfig:
     verbose: bool
 
 
+# --- Self-contained RECIST-from-GT extraction -------------------------------
+# Turns a GT label mask into the app's RECIST text format, one line per lesion:
+#   "z,x1,y1,x2,y2,label"  (axial voxel indices, label == connected-component id)
+# Same canonical algorithm as the rest of the pipeline (cc3d-26 instances, drop
+# tiny lesions, key slice = max axial area, longest external-contour pair), but
+# intentionally inlined here so this helper depends ONLY on third-party libs and
+# never imports another module in this repo.
+
+_MIN_LESION_VOXELS = 10        # drop lesions smaller than this (benchmark convention)
+_RECIST_MAX_CONTOUR_PTS = 500  # subsample contour to at most this many points before pdist
+
+
+def recist_lines_from_gt_mask(
+    gt_mask: "str | Path | object",
+    *,
+    min_voxels: int = _MIN_LESION_VOXELS,
+    expected_shape: "tuple[int, int, int] | None" = None,
+) -> list[str]:
+    """Extract one RECIST diameter line per GT lesion as app-ready text.
+
+    Returns a list of ``"z,x1,y1,x2,y2,label"`` strings (axial voxel indices,
+    ``label`` == connected-component instance id), a drop-in for the app's
+    ``recist-line-box`` textbox and ``_validate_recist_lines``. Returns ``[]``
+    when no lesion qualifies. Fully self-contained: depends only on numpy /
+    SimpleITK / scipy / (cv2 or skimage), never on another module in this repo.
+
+    ``gt_mask`` may be a NIfTI/.npy/.npz path or a 3D ``(z, y, x)`` ndarray.
+    ``expected_shape`` optionally guards that the mask matches the loaded image.
+    """
+    import numpy as np
+
+    gt = _as_mask_array(gt_mask)
+    if expected_shape is not None and gt.shape != tuple(expected_shape):
+        raise ValueError(f"GT mask shape {gt.shape} != image shape {tuple(expected_shape)}")
+
+    instance = _connected_components_26(gt > 0)
+    lines: list[str] = []
+    for lid in (int(v) for v in np.unique(instance) if v != 0):
+        lesion = instance == lid
+        if int(lesion.sum()) < min_voxels:
+            continue
+        z = int(np.argmax(lesion.sum(axis=(1, 2))))  # key slice = max axial area
+        endpoints = _longest_diameter_xy(lesion[z].astype(np.uint8))
+        if endpoints is None:
+            continue
+        (x1, y1), (x2, y2) = endpoints
+        lines.append(f"{z},{int(x1)},{int(y1)},{int(x2)},{int(y2)},{lid}")
+    return lines
+
+
+def _as_mask_array(gt_mask: "str | Path | object"):
+    """Load a GT mask into a 3D ``(z, y, x)`` integer ndarray (self-contained)."""
+    import numpy as np
+
+    if isinstance(gt_mask, np.ndarray):
+        arr = gt_mask
+    else:
+        p = str(gt_mask)
+        lower = p.lower()
+        if lower.endswith((".nii", ".nii.gz")):
+            import SimpleITK as sitk
+
+            arr = sitk.GetArrayFromImage(sitk.ReadImage(p))  # -> (z, y, x)
+        elif lower.endswith(".npz"):
+            with np.load(p, allow_pickle=True) as data:
+                key = next((k for k in ("gts", "mask", "recist", "arr_0") if k in data), None)
+                if key is None:
+                    raise ValueError(f"{p} has no gts/mask/recist/arr_0 array")
+                arr = data[key]
+        elif lower.endswith(".npy"):
+            arr = np.load(p, allow_pickle=True)
+        else:
+            raise ValueError(f"Unsupported GT mask format: {p}")
+    arr = np.asarray(arr)
+    if arr.ndim != 3:
+        raise ValueError(f"GT mask must be 3D (z, y, x); got shape {arr.shape}")
+    return arr
+
+
+def _connected_components_26(binary):
+    """26-connectivity instance labeling; cc3d if available, else scipy."""
+    import numpy as np
+
+    try:
+        import cc3d
+
+        return cc3d.connected_components(binary.astype(np.uint8), connectivity=26)
+    except ImportError:
+        from scipy import ndimage
+
+        structure = np.ones((3, 3, 3), dtype=int)  # full 26-connectivity
+        instance, _ = ndimage.label(binary.astype(np.uint8), structure=structure)
+        return instance
+
+
+def _longest_diameter_xy(mask_2d):
+    """Farthest external-contour point pair as ``((x1, y1), (x2, y2))`` or None."""
+    import numpy as np
+    from scipy.spatial.distance import pdist, squareform
+
+    try:
+        import cv2
+
+        contours, _ = cv2.findContours(mask_2d, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        if not contours:
+            return None
+        pts = np.vstack(contours).squeeze()  # (x, y)
+    except ImportError:
+        from skimage import measure
+
+        contours_yx = measure.find_contours(mask_2d, 0.5)
+        if not contours_yx:
+            return None
+        yx = np.concatenate(contours_yx, axis=0)
+        pts = np.stack([yx[:, 1], yx[:, 0]], axis=1)  # (row, col) -> (x, y)
+
+    if pts.ndim != 2 or len(pts) < 2:
+        return None
+    if len(pts) > _RECIST_MAX_CONTOUR_PTS:
+        pts = pts[np.linspace(0, len(pts) - 1, _RECIST_MAX_CONTOUR_PTS, dtype=int)]
+    dist_matrix = squareform(pdist(pts))
+    i, j = np.unravel_index(np.argmax(dist_matrix), dist_matrix.shape)
+    return np.rint(pts[i]).astype(int), np.rint(pts[j]).astype(int)
+
+
 def _strip_known_suffixes(path: Path) -> str:
     name = path.name
     for suffix in (".nii.gz", ".npz", ".npy", ".png", ".jpg", ".jpeg", ".tif", ".tiff"):
