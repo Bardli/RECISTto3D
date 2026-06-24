@@ -361,6 +361,19 @@ _JS_TEMPLATE = r"""
   }
   wlLo.oninput = wlHi.oninput = applyWL;
 
+  function setWindowLevel(width, level) {
+    const w = Number(width);
+    const l = Number(level);
+    if (!Number.isFinite(w) || !Number.isFinite(l) || w <= 0) return;
+    const lo = Math.max(WL_MIN, Math.min(WL_MAX, Math.round(l - w / 2)));
+    const hi = Math.max(WL_MIN, Math.min(WL_MAX, Math.round(l + w / 2)));
+    wlLo.value = Math.min(lo, hi);
+    wlHi.value = Math.max(lo, hi);
+    wlLbl.textContent = wlLabel(+wlLo.value, +wlHi.value);
+    syncWLFill();
+    applyWL();
+  }
+
   function modelMaskChecked(key) {
     const input = maskControls.querySelector(`.model-mask-check[data-model="${key}"]`);
     return !input || input.checked;
@@ -847,6 +860,7 @@ _JS_TEMPLATE = r"""
   window.recistTo3DViewer = {
     loadImage,
     loadModelMasks,
+    setWindowLevel,
     addManualRecistLine,
     clearViewerAnnotations,
     getRecistLine: () => recistLines.map(recistLineText).join('\n') || document.querySelector('#recist-line-box textarea, #recist-line-box input')?.value || '',
@@ -1315,18 +1329,33 @@ with gr.Blocks(title="RECISTto3D Three-Model Gradio App") as demo:
         _window_values_for_preset,
         inputs=window_preset,
         outputs=[window_width, window_level],
+    ).then(
+        fn=None,
+        inputs=[window_width, window_level],
+        outputs=None,
+        js="(width, level) => { window.recistTo3DViewer?.setWindowLevel?.(width, level); return []; }",
     )
 
     window_width.change(
         _preset_for_window_values,
         inputs=[window_width, window_level],
         outputs=window_preset,
+    ).then(
+        fn=None,
+        inputs=[window_width, window_level],
+        outputs=None,
+        js="(width, level) => { window.recistTo3DViewer?.setWindowLevel?.(width, level); return []; }",
     )
 
     window_level.change(
         _preset_for_window_values,
         inputs=[window_width, window_level],
         outputs=window_preset,
+    ).then(
+        fn=None,
+        inputs=[window_width, window_level],
+        outputs=None,
+        js="(width, level) => { window.recistTo3DViewer?.setWindowLevel?.(width, level); return []; }",
     )
 
     run.click(
