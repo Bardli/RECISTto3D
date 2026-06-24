@@ -29,10 +29,10 @@ APP_DATA = ROOT / "tmp"/".gradio_recistto3d"
 UPLOAD_DIR = APP_DATA / "uploads"
 RUN_DIR = APP_DATA / "runs"
 WINDOW_PRESET_VALUES = {
-    "Soft tissues (W:400 L:50)": (400, 50),
+    "Soft tissues (W:400 L:40)": (400, 40),
     "Lungs (W:1500 L:-600)": (1500, -600),
 }
-DEFAULT_WINDOW_PRESET = "Soft tissues (W:400 L:50)"
+DEFAULT_WINDOW_PRESET = "Soft tissues (W:400 L:40)"
 DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_LEVEL = WINDOW_PRESET_VALUES[DEFAULT_WINDOW_PRESET]
 MODEL_LABELS = {
     "eff-medsam2": "EfficientMedSAM2",
@@ -69,6 +69,10 @@ DEFAULT_DEVICE = "cuda:0" if "cuda:0" in DEVICE_CHOICES else "cpu"
 APP_CSS = """
 #recist-line-box {
   display: none !important;
+}
+#example-buttons {
+  width: 100%;
+  max-width: 970px;
 }
 """
 
@@ -156,10 +160,10 @@ _JS_TEMPLATE = r"""
                   margin-top:-1.5px;background:#333;border-radius:2px;"></div>
       <div id="nv-wl-fill" style="position:absolute;top:50%;height:3px;
                   margin-top:-1.5px;background:#7b6cf0;border-radius:2px;"></div>
-      <input id="nv-wl-lo" class="nv-r" type="range" min="-1500" max="3000" value="-898">
-      <input id="nv-wl-hi" class="nv-r" type="range" min="-1500" max="3000" value="401">
+      <input id="nv-wl-lo" class="nv-r" type="range" min="-1500" max="3000" value="-160">
+      <input id="nv-wl-hi" class="nv-r" type="range" min="-1500" max="3000" value="240">
     </div>
-    <span id="nv-wl-lbl" style="min-width:85px;color:#ddd;font-size:12px;">-898..401</span>
+    <span id="nv-wl-lbl" style="min-width:95px;color:#ddd;font-size:12px;">W:400 L:40</span>
   `;
   bar.appendChild(wlDiv);
 
@@ -268,6 +272,7 @@ _JS_TEMPLATE = r"""
   const wlLbl = document.getElementById('nv-wl-lbl');
   const wlFill = document.getElementById('nv-wl-fill');
   const WL_MIN = -1500, WL_MAX = 3000, WL_SPAN = WL_MAX - WL_MIN;
+  const WL_DEFAULT_LOW = -160, WL_DEFAULT_HIGH = 240;
 
   function setGradioTextbox(elemId, value) {
     const host = document.getElementById(elemId);
@@ -338,6 +343,12 @@ _JS_TEMPLATE = r"""
     wlFill.style.right = 'auto';
   }
 
+  function wlLabel(lo, hi) {
+    const width = Math.round(hi - lo);
+    const level = Math.round((hi + lo) / 2);
+    return `W:${width} L:${level}`;
+  }
+
   function applyWL() {
     const vol = nv.volumes?.[0];
     if (!vol) return;
@@ -345,7 +356,7 @@ _JS_TEMPLATE = r"""
     const hi = Math.max(+wlLo.value, +wlHi.value);
     vol.cal_min = lo; vol.cal_max = hi;
     if (nv.updateGLVolume) nv.updateGLVolume(); else nv.drawScene();
-    wlLbl.textContent = lo + '..' + hi;
+    wlLbl.textContent = wlLabel(lo, hi);
     syncWLFill();
   }
   wlLo.oninput = wlHi.oninput = applyWL;
@@ -762,10 +773,9 @@ _JS_TEMPLATE = r"""
       const vol = nv.volumes[0];
       nSlices = (vol.dims && vol.dims[3]) ? vol.dims[3] : 1;
       sliceSlider.max = Math.max(0, nSlices - 1);
-      wlLo.value = Math.round(vol.cal_min ?? -898);
-      wlHi.value = Math.round(vol.cal_max ?? 401);
-      wlLbl.textContent = Math.round(vol.cal_min ?? +wlLo.value) + '..' + Math.round(vol.cal_max ?? +wlHi.value);
-      syncWLFill();
+      wlLo.value = WL_DEFAULT_LOW;
+      wlHi.value = WL_DEFAULT_HIGH;
+      applyWL();
       setView(0);
       status.textContent = 'Image loaded. Draw RECIST lines.';
     } finally {
@@ -1197,12 +1207,6 @@ with gr.Blocks(title="RECISTto3D Three-Model Gradio App") as demo:
     with gr.Row():
         with gr.Column(scale=1):
             upload = gr.File(label="Upload NIfTI (.nii / .nii.gz)", type="filepath")
-            with gr.Row():
-                load_kidney = gr.Button("Kidney cancer", variant="secondary")
-                load_liver = gr.Button("Liver cancer", variant="secondary")
-            with gr.Row():
-                load_lung = gr.Button("Lung cancer", variant="secondary")
-                load_pancreas = gr.Button("Pancreas cancer", variant="secondary")
             recist_line = gr.Textbox(
                 label="RECIST lines (one per row: z,x1,y1,x2,y2,label)",
                 placeholder="Automatically filled after drawing RECIST lines on the axial NiiVue image",
@@ -1236,6 +1240,12 @@ with gr.Blocks(title="RECISTto3D Three-Model Gradio App") as demo:
 
         with gr.Column(scale=2):
             gr.HTML(value=CANVAS_HTML, js_on_load=JS_ON_LOAD)
+            with gr.Group(elem_id="example-buttons"):
+                with gr.Row():
+                    load_kidney = gr.Button("Kidney cancer", variant="secondary")
+                    load_liver = gr.Button("Liver cancer", variant="secondary")
+                    load_lung = gr.Button("Lung cancer", variant="secondary")
+                    load_pancreas = gr.Button("Pancreas cancer", variant="secondary")
 
     upload.change(
         prepare_uploaded_image,
