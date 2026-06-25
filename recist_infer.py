@@ -568,10 +568,12 @@ def run_medsam2_loop(image, recist, spacing, args, predictor, device, *, rng):
     assemble metadata; callers keep those concerns so their differing
     behaviour stays intact.
 
-    Mirrors the official ``medsam2_infer_CT_lesion_npz_recist.py`` reference:
-    high matmul precision, seeded torch/cuda/numpy RNG, the whole volume fed
-    to ``init_state`` (not a diameter-cropped z-slab), and a bf16 autocast on
-    CUDA.
+    Mirrors EAY131's two official references, branching on ``args.model``:
+    eff-medsam2 follows ``eff_medsam2_infer_CT_lesion_npz_recist.py`` (a
+    diameter-derived z-slab around the lesion, plain ``inference_mode`` with
+    NO bf16 autocast); medsam2 follows ``medsam2_infer_CT_lesion_npz_recist.py``
+    (the whole volume fed to ``init_state`` under bf16 autocast on CUDA). Both
+    share high matmul precision and seeded torch/cuda/numpy RNG.
     """
     import torch
 
@@ -591,9 +593,16 @@ def run_medsam2_loop(image, recist, spacing, args, predictor, device, *, rng):
     frames, video_height, video_width = medsam2_preprocess(volume_uint8)
     frames = frames.to(device)
 
-    # bf16 autocast on CUDA only; CPU bf16 autocast is unsupported for many
-    # ops, so fall back to a no-op context there.
-    if str(device).startswith("cuda"):
+    # Per-model z handling, faithfully mirroring EAY131's two official scripts.
+    #   * eff-medsam2: crop a diameter-derived z-slab [z_min, z_max] around the
+    #     lesion and run under plain inference_mode (the official eff script
+    #     uses NO autocast).
+    #   * medsam2: feed the whole volume (z_min=0, z_max=D-1) under bf16
+    #     autocast on CUDA (CPU bf16 autocast is unsupported for many ops, so
+    #     it falls back to a no-op context there).
+    eff_zslab = args.model == "eff-medsam2"
+
+    if not eff_zslab and str(device).startswith("cuda"):
         autocast_ctx = torch.autocast("cuda", dtype=torch.bfloat16)
     else:
         autocast_ctx = nullcontext()
@@ -602,19 +611,26 @@ def run_medsam2_loop(image, recist, spacing, args, predictor, device, *, rng):
     boxes = []
     labels = [prompt.label for prompt in prompt_specs]
 
-    # Feed the whole volume, matching the official reference (z_min=0,
-    # z_max=D-1), rather than a diameter-derived z-slab.
     for prompt in prompt_specs:
-        z_mid = prompt.z
+        if eff_zslab:
+            # Slab bounds were precomputed in prompt_specs_from_recist with the
+            # identical diameter/spacing formula used by the official eff script.
+            z_lo = int(prompt.z_min) if prompt.z_min is not None else 0
+            z_hi = int(prompt.z_max) if prompt.z_max is not None else image.shape[0] - 1
+            model_frames = frames[z_lo : z_hi + 1]
+        else:
+            z_lo = 0
+            model_frames = frames
+        local_z = int(prompt.z) - z_lo  # frame index within the (possibly cropped) volume
 
         with torch.inference_mode(), autocast_ctx:
-            state = predictor.init_state(frames, video_height, video_width)
+            state = predictor.init_state(model_frames, video_height, video_width)
             if prompt.kind == "box":
                 box_2d = prompt.box_xyxy.astype(np.float32)
                 boxes.append([box_2d[0], box_2d[1], prompt.z, box_2d[2], box_2d[3], prompt.z])
                 _, _, out_mask_logits = predictor.add_new_points_or_box(
                     inference_state=state,
-                    frame_idx=z_mid,
+                    frame_idx=local_z,
                     obj_id=1,
                     box=box_2d,
                 )
@@ -623,7 +639,7 @@ def run_medsam2_loop(image, recist, spacing, args, predictor, device, *, rng):
                 labels_arr = np.ones(len(points), dtype=np.int32)
                 _, _, out_mask_logits = predictor.add_new_points_or_box(
                     inference_state=state,
-                    frame_idx=z_mid,
+                    frame_idx=local_z,
                     obj_id=1,
                     points=points,
                     labels=labels_arr,
@@ -632,22 +648,22 @@ def run_medsam2_loop(image, recist, spacing, args, predictor, device, *, rng):
                 raise ValueError(f"Unsupported prompt kind: {prompt.kind}")
 
             mask_prompt = (out_mask_logits[0] > 0.0).squeeze(0).cpu().numpy().astype(np.uint8)
-            _, _, masks = predictor.add_new_mask(state, frame_idx=z_mid, obj_id=1, mask=mask_prompt)
+            _, _, masks = predictor.add_new_mask(state, frame_idx=local_z, obj_id=1, mask=mask_prompt)
             segs[prompt.z, (masks[0] > 0.0).cpu().numpy()[0]] = prompt.label
 
             for out_frame_idx, _, out_mask_logits in predictor.propagate_in_video(
-                state, start_frame_idx=z_mid, reverse=False
+                state, start_frame_idx=local_z, reverse=False
             ):
-                segs[out_frame_idx, (out_mask_logits[0] > 0.0).cpu().numpy()[0]] = prompt.label
+                segs[z_lo + out_frame_idx, (out_mask_logits[0] > 0.0).cpu().numpy()[0]] = prompt.label
 
             predictor.reset_state(state)
-            state = predictor.init_state(frames, video_height, video_width)
-            predictor.add_new_mask(state, frame_idx=z_mid, obj_id=1, mask=mask_prompt)
+            state = predictor.init_state(model_frames, video_height, video_width)
+            predictor.add_new_mask(state, frame_idx=local_z, obj_id=1, mask=mask_prompt)
 
             for out_frame_idx, _, out_mask_logits in predictor.propagate_in_video(
-                state, start_frame_idx=z_mid, reverse=True
+                state, start_frame_idx=local_z, reverse=True
             ):
-                segs[out_frame_idx, (out_mask_logits[0] > 0.0).cpu().numpy()[0]] = prompt.label
+                segs[z_lo + out_frame_idx, (out_mask_logits[0] > 0.0).cpu().numpy()[0]] = prompt.label
 
             predictor.reset_state(state)
 
