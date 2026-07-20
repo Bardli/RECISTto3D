@@ -1,0 +1,36 @@
+<!doctype html><html><body>
+<canvas id="gl" width="960" height="720"></canvas>
+<script type="module">
+  const { Niivue } = await import("https://unpkg.com/@niivue/niivue@0.68.2/dist/index.js");
+  window.__run = async (file) => {
+    const nv = new Niivue({ isRadiologicalConvention: true });
+    await nv.attachTo('gl');
+    await nv.loadVolumes([{ url: file, name: file }]);
+    nv.setRadiologicalConvention(true);
+    nv.setSliceType(nv.sliceTypeAxial); // single axial slice, like the app
+    nv.drawScene();
+    await new Promise(r => setTimeout(r, 300));
+    nv.drawScene();
+    const vol = nv.volumes[0];
+    const frac = [0.3, 0.7, 0.5];
+    const rasVox = Array.from(nv.frac2vox(frac)).map(v => Math.round(v));
+    const dims = vol.dims;
+    const maxX = dims[1]-1, maxY = dims[2]-1;
+    const flipped = [maxX - rasVox[0], maxY - rasVox[1], rasVox[2]];
+    const f2c = (typeof nv.frac2canvas === 'function');
+    return {
+      dims: Array.from(vol.dims),
+      permRAS: vol.permRAS ? Array.from(vol.permRAS) : null,
+      dimsRAS: vol.dimsRAS ? Array.from(vol.dimsRAS) : null,
+      frac, rasVox,
+      // canvas of the TRUE clicked frac (where the preview line sits during drag):
+      canvasTrue:    f2c ? Array.from(nv.frac2canvas(frac)) : null,
+      // canvas the redraw produces feeding the FLIPPED stored coord (current code):
+      canvasFlipped: f2c ? Array.from(nv.frac2canvas(nv.vox2frac(flipped))) : null,
+      // canvas feeding the raw rasVox (no flip):
+      canvasRasVox:  f2c ? Array.from(nv.frac2canvas(nv.vox2frac(rasVox))) : null,
+      flipped,
+    };
+  };
+  window.__ready = true;
+</script></body></html>

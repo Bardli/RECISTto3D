@@ -1,63 +1,55 @@
 # RECISTto3D orientation bug — root cause & fix
 
-**Symptom:** when the uploaded volume's orientation (NIfTI direction matrix)
-differs from the bundled examples, Gradio draws the predicted mask in the wrong
-direction (mirrored / transposed).
+**Symptom:** for some volumes the drawn RECIST line jumps to the opposite corner
+("diagonal") on mouse-up, and/or the predicted mask is drawn mirrored.
 
-## Root cause
+## Root cause (verified against a live NiiVue + NIfTI headers)
 
-Two coordinate spaces handle the direction matrix in opposite ways:
+NiiVue displays a volume using the **NIfTI affine** (RAS+ convention). The model
+side (`recist_infer.py`, `sitk.GetArrayFromImage`) reads the volume in native
+stored order using the **SimpleITK direction** (LPS+ convention). NIfTI and ITK
+negate the X and Y axis signs relative to each other, so a single file is read
+with *opposite* orientation by the two:
 
-- **NiiVue viewer** (`app_three_models.py`, `pointFromEvent`): `nv.frac2vox`
-  returns voxel indices in NiiVue's **RAS-reoriented** space. NiiVue 0.68.2's
-  `convertFrac2Vox` source is literally commented `// dims === RAS`, and
-  `calculateRAS` derives an axis permutation + per-axis flip (`permRAS`) from the
-  affine.
-- **Python model** (`recist_infer.py:143`): `sitk.GetArrayFromImage` returns the
-  **native stored** buffer `(z, y, x)`, unchanged by the direction matrix
-  (verified: changing direction leaves the buffer `np.array_equal`). RECIST
-  `x1,y1` indexes `array[z, y1, x1]`.
+| file | NIfTI affine diag (NiiVue) | sitk direction diag (model) |
+|------|----------------------------|-----------------------------|
+| `kidney_cancer.nii.gz`   | −0.68, −0.68, + | **+1, +1, +1** |
+| `pancreas_cancer.nii.gz` | +0.94, +0.94, + | **−1, −1, +1** |
 
-The old line 485 (`vox: [isRadiological ? maxX - x : x, maxY - y, z]`) hardcoded
-flips calibrated for **identity-direction** volumes only — which is all three
-bundled examples (`diag(1,1,1)`, determinant 1). For any other direction NiiVue
-applies an extra perm/flip that the hardcoded flips did not undo, so the model
-received a mirrored/transposed coordinate.
+The app's RECIST coordinate flips were calibrated for the kidney-style layout
+(sitk-identity). `pancreas_cancer.nii.gz` has the mirror storage layout, so the
+click→coordinate and coordinate→redraw mappings disagree and the line/mask land
+in the mirrored (diagonal) position.
 
-## Fix (JS side, `app_three_models.py`)
+Note this is **not** NiiVue's `permRAS` axis permutation — a live NiiVue reports
+`permRAS = [1,2,3]` (identity) for pancreas. The divergence is purely the
+RAS/LPS *sign* convention, which `permRAS` does not expose. Earlier `permRAS`-
+based JS fixes were therefore inert for the real failing file and were reverted.
 
-The fix is scoped to the **click → model** (send) path only. Read NiiVue's
-`vol.permRAS` and convert the RAS voxel from `frac2vox` back to the native stored
-index:
+## Fix (Python side, `app_three_models.py`)
 
-- `pointFromEvent`: RAS voxel → native (`rasVoxToNative`) → then the existing
-  fixed identity flips (via `nativeMaxForAxis`). The coordinate sent to the model
-  is now direction-independent.
+Normalise every volume to a single canonical orientation before it reaches
+either the viewer or the model, so both agree:
 
-The **redraw** path (`lineScreenPointsFromVox`) is left on the original
-`vox2frac([x1,y1,z])` mapping. An initial attempt to remap it via `permRAS`
-mis-drew the RECIST line even for the identity examples: `vox2frac`/`frac2canvas`
-already carry the matching display flips, so the original mapping round-trips
-correctly for identity and remapping it double-corrected. Reverse-engineering
-`vox2frac`/`frac2canvas` well enough to also fix the non-identity redraw was not
-reliable from the source alone, so that display refinement is deferred (the
-mask itself — which is what the model produces — is unaffected).
+- `_normalize_orientation(src, dst)` — `sitk.DICOMOrient(img, "LPS")` (skips the
+  rewrite when the direction is already identity). Geometry is preserved (a fixed
+  physical point keeps its intensity; verified).
+- `_copy_upload` normalises uploads in place of a plain copy.
+- `_example_normalized` serves a cached canonical copy of the read-only example
+  files (never mutates the repo examples).
 
-`write_nifti` (`recist_infer.py:885`, `CopyInformation`) was already correct and
-is unchanged. Model-mask overlays are auto-reoriented to RAS by NiiVue and share
-the input geometry, so they need no change.
+After normalisation `pancreas_cancer.nii.gz` matches the known-good kidney
+convention exactly (sitk `(1,1,1)`, NIfTI affine `(−,−,+)`), so the viewer and
+model are consistent and the original coordinate flips are valid again. The JS
+coordinate code is back to its original pre-bug form.
 
-## Regression tests (all pass)
+## Probe / regression aids
 
-- `test_orientation_roundtrip.py` — models NiiVue's native↔RAS reorientation;
-  proves the old send-path diverges by direction and the fix does not, keeping the
-  identity example bit-identical.
-- `check_js.mjs` — the actual ported JS send-path helpers: identity / flipped-XY /
-  swapped-XY / flip-X all map one click to the same native index.
-
-Run:
-
-```bash
-python3 docs/experiments/orientation_bug/test_orientation_roundtrip.py
-node    docs/experiments/orientation_bug/check_js.mjs
-```
+- `nv_probe.mjs` / `run_probe.mjs` / `probe.html` — drive a real headless NiiVue
+  0.68.2 to read `permRAS` / `frac2vox` for a volume. This is how `permRAS=[1,2,3]`
+  for pancreas was established, ruling out the permutation hypothesis. Needs
+  `puppeteer-core` + system Chrome; `frac2canvas` returns null headless (no
+  on-screen layout), so screen-space assertions must be checked in the real app.
+- `test_orientation_roundtrip.py` / `check_js.mjs` — earlier permRAS models,
+  retained for history; they describe the rejected hypothesis, not the shipped
+  fix.

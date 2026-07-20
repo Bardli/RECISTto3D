@@ -501,37 +501,9 @@ _JS_TEMPLATE = r"""
     renderRecistOverlays();
   }
 
-  // NiiVue frac2vox returns voxel indices in RAS-reoriented space (source is
-  // commented "// dims === RAS"; calculateRAS derives permRAS from the affine).
-  // The Python model side (sitk.GetArrayFromImage) works in the NATIVE stored
-  // order. permRAS[i] is the signed 1-based native axis feeding RAS axis i
-  // (negative == that axis is flipped). pointFromEvent uses this to turn a click
-  // into the native RECIST coordinate the model expects, for any input
-  // orientation (all bundled examples happen to be identity-direction).
-  // NOTE: the redraw path (lineScreenPointsFromVox) intentionally stays on the
-  // original vox2frac([x1,y1,z]) mapping -- vox2frac/frac2canvas already carry the
-  // matching display flips, so it round-trips for identity; the RAS<->native
-  // remap here is only for the click->model send path.
-  function volPermRAS(vol) {
-    const p = vol && vol.permRAS;
-    if (Array.isArray(p) && p.length === 3 && p.every(v => Number.isFinite(v) && v !== 0)) {
-      return p.slice();
-    }
-    return [1, 2, 3]; // identity fallback (matches legacy behaviour)
-  }
-
-  // RAS voxel (from frac2vox) -> native stored (x, y, z) index.
-  function rasVoxToNative(ras, dimsRAS, perm) {
-    const nat = [0, 0, 0];
-    for (let i = 0; i < 3; i++) {
-      const ax = Math.abs(perm[i]) - 1;
-      let v = ras[i];
-      if (perm[i] < 0) v = (dimsRAS[i] - 1) - v;
-      nat[ax] = v;
-    }
-    return nat;
-  }
-
+  // Coordinates here are simple: the uploaded/example volume is normalised to a
+  // canonical LPS orientation on the Python side (see prepare_uploaded_image /
+  // load_example_image), so NiiVue's display and the model's sitk array agree.
   function pointFromEvent(ev) {
     if (!nv.volumes?.[0] || typeof nv.canvasPos2frac !== 'function' || typeof nv.frac2vox !== 'function') {
       status.textContent = 'NiiVue coordinate API unavailable';
@@ -544,38 +516,18 @@ _JS_TEMPLATE = r"""
     const canvasY = cssY * (canvas.height / rect.height);
     const frac = nv.canvasPos2frac([canvasX, canvasY]);
     if (!frac || frac.some(v => !Number.isFinite(v) || v < -0.001 || v > 1.001)) return null;
-    const vol = nv.volumes[0];
-    const rasVox = nv.frac2vox(frac).map(v => Math.round(v));
-    // dims here are NiiVue's RAS-reoriented dims.
-    const dimsRAS = vol.dims || [];
-    const rasMaxX = (dimsRAS[1] || 1) - 1;
-    const rasMaxY = (dimsRAS[2] || 1) - 1;
-    const rasMaxZ = (dimsRAS[3] || nSlices || 1) - 1;
-    const rx = Math.max(0, Math.min(rasMaxX, rasVox[0]));
-    const ry = Math.max(0, Math.min(rasMaxY, rasVox[1]));
-    const rz = Math.max(0, Math.min(rasMaxZ, rasVox[2]));
-    // Undo NiiVue's affine-driven perm/flip to reach native stored (x, y, z).
-    const perm = volPermRAS(vol);
-    const nat = rasVoxToNative([rx, ry, rz], [dimsRAS[1] || 1, dimsRAS[2] || 1, dimsRAS[3] || 1], perm);
-    const nx = nat[0];
-    const ny = nat[1];
-    const nz = nat[2];
-    // Fixed identity-display flips the model prompt has always used (native dims).
+    const vox = nv.frac2vox(frac).map(v => Math.round(v));
+    const dims = nv.volumes[0].dims || [];
+    const maxX = (dims[1] || 1) - 1;
+    const maxY = (dims[2] || 1) - 1;
+    const maxZ = (dims[3] || nSlices || 1) - 1;
+    const x = Math.max(0, Math.min(maxX, vox[0]));
+    const y = Math.max(0, Math.min(maxY, vox[1]));
+    const z = Math.max(0, Math.min(maxZ, vox[2]));
     return {
       screen: [cssX, cssY],
-      vox: [isRadiological ? nativeMaxForAxis(vol, 0) - nx : nx, nativeMaxForAxis(vol, 1) - ny, nz],
+      vox: [isRadiological ? maxX - x : x, maxY - y, z],
     };
-  }
-
-  // Max index of a native axis (0=x,1=y,2=z), read from NiiVue's RAS dims + permRAS.
-  function nativeMaxForAxis(vol, nativeAxis) {
-    const perm = volPermRAS(vol);
-    const dimsRAS = vol.dims || [];
-    const dRAS = [dimsRAS[1] || 1, dimsRAS[2] || 1, dimsRAS[3] || 1];
-    for (let i = 0; i < 3; i++) {
-      if (Math.abs(perm[i]) - 1 === nativeAxis) return dRAS[i] - 1;
-    }
-    return (dRAS[nativeAxis] || 1) - 1;
   }
 
   function recistLineText(line) {
@@ -1075,12 +1027,52 @@ def _nifti_suffix(path: str | Path) -> str:
     raise gr.Error("Please upload a .nii or .nii.gz file.")
 
 
+NORMALIZED_DIR = APP_DATA / "normalized"
+
+
+def _normalize_orientation(src: Path, dst: Path) -> Path:
+    """Write an orientation-normalised (canonical LPS) copy of ``src`` to ``dst``.
+
+    NiiVue displays a volume using the NIfTI affine (RAS+ convention) while the
+    model reads the sitk array in native stored order (LPS+ convention). When a
+    volume's stored buffer is mirrored/permuted relative to canonical LPS, the two
+    disagree and RECIST coordinates land in the wrong place (e.g. the drawn line
+    jumps to the opposite corner, and the predicted mask is mirrored). Reorienting
+    both the buffer and the header to a single canonical orientation makes the
+    viewer and the model agree for any input. If the volume is already canonical
+    LPS the source is copied unchanged.
+    """
+    import numpy as np
+    import SimpleITK as sitk
+
+    img = sitk.ReadImage(str(src))
+    direction = np.array(img.GetDirection()).reshape(3, 3)
+    if np.allclose(direction, np.eye(3)):
+        shutil.copy2(src, dst)
+        return dst
+    oriented = sitk.DICOMOrient(img, "LPS")
+    sitk.WriteImage(oriented, str(dst))
+    return dst
+
+
 def _copy_upload(file_path: str) -> Path:
     _ensure_dirs()
     src = Path(file_path)
     suffix = _nifti_suffix(src)
     dst = UPLOAD_DIR / f"{int(time.time())}_{uuid.uuid4().hex[:8]}{suffix}"
-    shutil.copy2(src, dst)
+    _normalize_orientation(src, dst)
+    return dst
+
+
+def _example_normalized(src: Path) -> Path:
+    """Return a cached canonical-LPS copy of a read-only example volume."""
+    _ensure_dirs()
+    NORMALIZED_DIR.mkdir(parents=True, exist_ok=True)
+    suffix = _nifti_suffix(src)
+    stem = src.name[: -len(suffix)]
+    dst = NORMALIZED_DIR / f"{stem}_{int(src.stat().st_mtime)}{suffix}"
+    if not dst.exists():
+        _normalize_orientation(src, dst)
     return dst
 
 
@@ -1119,6 +1111,7 @@ def load_example_image(example_path: str, window_preset: str):
     image = Path(example_path)
     if not image.exists():
         raise gr.Error(f"Example file not found: {image}")
+    image = _example_normalized(image)
     window_width, window_level = WINDOW_PRESET_VALUES[window_preset]
     return (
         str(image),
