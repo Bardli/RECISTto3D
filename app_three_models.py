@@ -73,6 +73,44 @@ APP_CSS = """
 #example-buttons {
   width: 100%;
   max-width: 970px;
+  padding: 10px 0 0;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+#example-buttons .example-buttons-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 10px;
+  text-align: center;
+  color: #374151;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+#example-buttons .example-buttons-title p {
+  margin: 0;
+  white-space: nowrap;
+}
+#example-buttons .example-buttons-title::before,
+#example-buttons .example-buttons-title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: #d1d5db;
+}
+#example-buttons button {
+  border-radius: 10px !important;
+  background: #ffffff !important;
+  border: 1px solid #d1d5db !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08) !important;
+  color: #111827 !important;
+}
+#example-buttons button:hover {
+  border-color: #7b6cf0 !important;
+  box-shadow: 0 3px 8px rgba(123, 108, 240, 0.18) !important;
 }
 """
 
@@ -244,6 +282,9 @@ _JS_TEMPLATE = r"""
   let selectedLabel = null;
   let currentImageUrl = '';
   let maskVolumeIndexByKey = {};
+  let loadingLockDepth = 0;
+  const lockedControlStates = new WeakMap();
+  const lockedControls = new Set();
   const RECIST_COLORS = ['#00ff8a', '#ffd166', '#4cc9f0', '#f72585', '#f77f00', '#b8f2e6', '#c77dff', '#90be6d'];
 
   const nv = new Niivue({
@@ -752,14 +793,61 @@ _JS_TEMPLATE = r"""
     return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   }
 
+  function isVisibleControl(control) {
+    const style = window.getComputedStyle(control);
+    return style.display !== 'none' && style.visibility !== 'hidden' && control.getClientRects().length > 0;
+  }
+
+  function setLoadingControlsLocked(locked) {
+    const appRoot = document.querySelector('.gradio-container') || document.body;
+    const controls = Array.from(appRoot.querySelectorAll('button, input, select, textarea'))
+      .filter(isVisibleControl);
+    if (locked) {
+      controls.forEach(control => {
+        if (!lockedControlStates.has(control)) {
+          lockedControlStates.set(control, {
+            disabled: control.disabled,
+            ariaDisabled: control.getAttribute('aria-disabled'),
+            cursor: control.style.cursor,
+          });
+        }
+        lockedControls.add(control);
+        control.disabled = true;
+        control.setAttribute('aria-disabled', 'true');
+        control.style.cursor = 'not-allowed';
+      });
+      return;
+    }
+    lockedControls.forEach(control => {
+      const state = lockedControlStates.get(control);
+      if (!state) return;
+      control.disabled = state.disabled;
+      if (state.ariaDisabled === null) {
+        control.removeAttribute('aria-disabled');
+      } else {
+        control.setAttribute('aria-disabled', state.ariaDisabled);
+      }
+      control.style.cursor = state.cursor;
+      lockedControlStates.delete(control);
+    });
+    lockedControls.clear();
+  }
+
   function showLoading(message = 'Loading...') {
+    loadingLockDepth += 1;
+    setLoadingControlsLocked(true);
     loadingOverlay.textContent = message;
     updateOverlaySize();
+    loadingOverlay.style.pointerEvents = 'all';
     loadingOverlay.style.display = 'flex';
   }
 
   function hideLoading() {
+    loadingLockDepth = Math.max(0, loadingLockDepth - 1);
+    if (loadingLockDepth > 0) return;
     loadingOverlay.style.display = 'none';
+    loadingOverlay.style.pointerEvents = 'none';
+    setLoadingControlsLocked(false);
   }
 
   function applyOrientation() {
@@ -1051,10 +1139,11 @@ def prepare_uploaded_image(file_path: str | None):
     )
 
 
-def load_example_image(example_path: str):
+def load_example_image(example_path: str, window_preset: str):
     image = Path(example_path)
     if not image.exists():
         raise gr.Error(f"Example file not found: {image}")
+    window_width, window_level = WINDOW_PRESET_VALUES[window_preset]
     return (
         str(image),
         _file_url(image),
@@ -1067,6 +1156,9 @@ def load_example_image(example_path: str):
         "",
         f"Example image loaded: {image.name}",
         "",
+        window_preset,
+        window_width,
+        window_level,
     )
 
 
@@ -1277,8 +1369,8 @@ def run_inference(
     )
 
 
-with gr.Blocks(title="RECISTto3D Three-Model Gradio App") as demo:
-    gr.Markdown("## RECISTto3D Three-Model NiiVue Demo")
+with gr.Blocks(title="RECIST to 3D for Pan-cancer Segmentation in CT Images") as demo:
+    gr.Markdown("## RECIST to 3D for Pan-cancer Segmentation in CT Images")
     gr.Markdown(
         "Upload a `.nii/.nii.gz` file, or click **Load example**. In the **Axial** view, click **Draw RECIST**, "
         "drag one or more lines, then run all three models. Spacing is read automatically from the NIfTI header."
@@ -1330,6 +1422,7 @@ with gr.Blocks(title="RECISTto3D Three-Model Gradio App") as demo:
         with gr.Column(scale=2):
             gr.HTML(value=CANVAS_HTML, js_on_load=JS_ON_LOAD)
             with gr.Group(elem_id="example-buttons"):
+                gr.Markdown("Example cases (click to load)", elem_classes=["example-buttons-title"])
                 with gr.Row():
                     load_kidney = gr.Button("Kidney cancer", variant="secondary")
                     load_liver = gr.Button("Liver cancer", variant="secondary")
@@ -1356,18 +1449,18 @@ with gr.Blocks(title="RECISTto3D Three-Model Gradio App") as demo:
         fn=None,
         inputs=image_url_state,
         outputs=None,
-        js="(imageUrl) => { window.recistTo3DViewer?.loadImage(imageUrl); return []; }",
+        js="async (imageUrl) => { await window.recistTo3DViewer?.loadImage(imageUrl); return []; }",
     )
 
-    for button, example_path in [
-        (load_kidney, EXAMPLE_IMAGES["Kidney cancer"]),
-        (load_liver, EXAMPLE_IMAGES["Liver cancer"]),
-        (load_lung, EXAMPLE_IMAGES["Lung cancer"]),
-        (load_pancreas, EXAMPLE_IMAGES["Pancreas cancer"]),
+    for button, example_path, example_window_preset in [
+        (load_kidney, EXAMPLE_IMAGES["Kidney cancer"], "Soft tissues (W:400 L:40)"),
+        (load_liver, EXAMPLE_IMAGES["Liver cancer"], "Soft tissues (W:400 L:40)"),
+        (load_lung, EXAMPLE_IMAGES["Lung cancer"], "Lungs (W:1500 L:-600)"),
+        (load_pancreas, EXAMPLE_IMAGES["Pancreas cancer"], "Soft tissues (W:400 L:40)"),
     ]:
         button.click(
             load_example_image,
-            inputs=gr.State(str(example_path)),
+            inputs=[gr.State(str(example_path)), gr.State(example_window_preset)],
             outputs=[
                 image_path_state,
                 image_url_state,
@@ -1380,12 +1473,15 @@ with gr.Blocks(title="RECISTto3D Three-Model Gradio App") as demo:
                 recist_line,
                 status,
                 log,
+                window_preset,
+                window_width,
+                window_level,
             ],
         ).then(
             fn=None,
-            inputs=image_url_state,
+            inputs=[image_url_state, window_width, window_level],
             outputs=None,
-            js="(imageUrl) => { window.recistTo3DViewer?.loadImage(imageUrl); return []; }",
+            js="async (imageUrl, width, level) => { await window.recistTo3DViewer?.loadImage(imageUrl); window.recistTo3DViewer?.setWindowLevel?.(width, level); return []; }",
         )
 
     manual_add.click(
@@ -1456,7 +1552,7 @@ with gr.Blocks(title="RECISTto3D Three-Model Gradio App") as demo:
         fn=None,
         inputs=[eff_mask_url_state, medsam2_mask_url_state, nninteractive_mask_url_state],
         outputs=None,
-        js="(effMaskUrl, medsam2MaskUrl, nninteractiveMaskUrl) => { window.recistTo3DViewer?.loadModelMasks(effMaskUrl, medsam2MaskUrl, nninteractiveMaskUrl); return []; }",
+        js="async (effMaskUrl, medsam2MaskUrl, nninteractiveMaskUrl) => { await window.recistTo3DViewer?.loadModelMasks(effMaskUrl, medsam2MaskUrl, nninteractiveMaskUrl); return []; }",
     )
 
 
