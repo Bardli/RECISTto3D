@@ -460,6 +460,45 @@ _JS_TEMPLATE = r"""
     renderRecistOverlays();
   }
 
+  // NiiVue frac2vox/vox2frac operate in RAS-reoriented voxel space (source is
+  // commented "// dims === RAS"; calculateRAS derives permRAS from the affine).
+  // The Python model side (sitk.GetArrayFromImage) works in the NATIVE stored
+  // order. permRAS[i] is the signed 1-based native axis feeding RAS axis i
+  // (negative == that axis is flipped). We convert between the two so RECIST
+  // coordinates are correct for any input orientation, not just identity-direction
+  // volumes (which is all the bundled examples happen to be).
+  function volPermRAS(vol) {
+    const p = vol && vol.permRAS;
+    if (Array.isArray(p) && p.length === 3 && p.every(v => Number.isFinite(v) && v !== 0)) {
+      return p.slice();
+    }
+    return [1, 2, 3]; // identity fallback (matches legacy behaviour)
+  }
+
+  // RAS voxel (from frac2vox) -> native stored (x, y, z) index.
+  function rasVoxToNative(ras, dimsRAS, perm) {
+    const nat = [0, 0, 0];
+    for (let i = 0; i < 3; i++) {
+      const ax = Math.abs(perm[i]) - 1;
+      let v = ras[i];
+      if (perm[i] < 0) v = (dimsRAS[i] - 1) - v;
+      nat[ax] = v;
+    }
+    return nat;
+  }
+
+  // Native stored (x, y, z) index -> RAS voxel (for vox2frac).
+  function nativeToRasVox(nat, dimsRAS, perm) {
+    const ras = [0, 0, 0];
+    for (let i = 0; i < 3; i++) {
+      const ax = Math.abs(perm[i]) - 1;
+      let v = nat[ax];
+      if (perm[i] < 0) v = (dimsRAS[i] - 1) - v;
+      ras[i] = v;
+    }
+    return ras;
+  }
+
   function pointFromEvent(ev) {
     if (!nv.volumes?.[0] || typeof nv.canvasPos2frac !== 'function' || typeof nv.frac2vox !== 'function') {
       status.textContent = 'NiiVue coordinate API unavailable';
@@ -472,18 +511,38 @@ _JS_TEMPLATE = r"""
     const canvasY = cssY * (canvas.height / rect.height);
     const frac = nv.canvasPos2frac([canvasX, canvasY]);
     if (!frac || frac.some(v => !Number.isFinite(v) || v < -0.001 || v > 1.001)) return null;
-    const vox = nv.frac2vox(frac).map(v => Math.round(v));
-    const dims = nv.volumes[0].dims || [];
-    const maxX = (dims[1] || 1) - 1;
-    const maxY = (dims[2] || 1) - 1;
-    const maxZ = (dims[3] || nSlices || 1) - 1;
-    const x = Math.max(0, Math.min(maxX, vox[0]));
-    const y = Math.max(0, Math.min(maxY, vox[1]));
-    const z = Math.max(0, Math.min(maxZ, vox[2]));
+    const vol = nv.volumes[0];
+    const rasVox = nv.frac2vox(frac).map(v => Math.round(v));
+    // dims here are NiiVue's RAS-reoriented dims.
+    const dimsRAS = vol.dims || [];
+    const rasMaxX = (dimsRAS[1] || 1) - 1;
+    const rasMaxY = (dimsRAS[2] || 1) - 1;
+    const rasMaxZ = (dimsRAS[3] || nSlices || 1) - 1;
+    const rx = Math.max(0, Math.min(rasMaxX, rasVox[0]));
+    const ry = Math.max(0, Math.min(rasMaxY, rasVox[1]));
+    const rz = Math.max(0, Math.min(rasMaxZ, rasVox[2]));
+    // Undo NiiVue's affine-driven perm/flip to reach native stored (x, y, z).
+    const perm = volPermRAS(vol);
+    const nat = rasVoxToNative([rx, ry, rz], [dimsRAS[1] || 1, dimsRAS[2] || 1, dimsRAS[3] || 1], perm);
+    const nx = nat[0];
+    const ny = nat[1];
+    const nz = nat[2];
+    // Fixed identity-display flips the model prompt has always used (native dims).
     return {
       screen: [cssX, cssY],
-      vox: [isRadiological ? maxX - x : x, maxY - y, z],
+      vox: [isRadiological ? nativeMaxForAxis(vol, 0) - nx : nx, nativeMaxForAxis(vol, 1) - ny, nz],
     };
+  }
+
+  // Max index of a native axis (0=x,1=y,2=z), read from NiiVue's RAS dims + permRAS.
+  function nativeMaxForAxis(vol, nativeAxis) {
+    const perm = volPermRAS(vol);
+    const dimsRAS = vol.dims || [];
+    const dRAS = [dimsRAS[1] || 1, dimsRAS[2] || 1, dimsRAS[3] || 1];
+    for (let i = 0; i < 3; i++) {
+      if (Math.abs(perm[i]) - 1 === nativeAxis) return dRAS[i] - 1;
+    }
+    return (dRAS[nativeAxis] || 1) - 1;
   }
 
   function recistLineText(line) {
@@ -502,9 +561,23 @@ _JS_TEMPLATE = r"""
     return Math.hypot(line.x2 - line.x1, line.y2 - line.y1).toFixed(1);
   }
 
+  // Inverse of pointFromEvent: a stored model-convention (x, y, z) line endpoint
+  // -> RAS voxel that vox2frac expects. Undo the fixed identity flip, then apply
+  // NiiVue's affine perm/flip.
+  function modelVoxToRasVox(vol, mx, my, mz) {
+    const perm = volPermRAS(vol);
+    const dimsRAS = vol.dims || [];
+    const dRAS = [dimsRAS[1] || 1, dimsRAS[2] || 1, dimsRAS[3] || 1];
+    const nx = isRadiological ? nativeMaxForAxis(vol, 0) - mx : mx;
+    const ny = nativeMaxForAxis(vol, 1) - my;
+    const nz = mz;
+    return nativeToRasVox([nx, ny, nz], dRAS, perm);
+  }
+
   function lineScreenPointsFromVox(line) {
     if (!nv.volumes?.[0]) return [line.startScreen || null, line.endScreen || null];
-    const dims = nv.volumes[0].dims || [];
+    const vol = nv.volumes[0];
+    const dims = vol.dims || [];
     const maxX = (dims[1] || 1) - 1;
     const maxY = (dims[2] || 1) - 1;
     const rect = canvas.getBoundingClientRect();
@@ -513,8 +586,10 @@ _JS_TEMPLATE = r"""
     const y1 = line.y1;
     const y2 = line.y2;
     if (typeof nv.vox2frac === 'function' && typeof nv.frac2canvas === 'function') {
-      const start = nv.frac2canvas(nv.vox2frac([x1, y1, line.z]));
-      const end = nv.frac2canvas(nv.vox2frac([x2, y2, line.z]));
+      const startRas = modelVoxToRasVox(vol, x1, y1, line.z);
+      const endRas = modelVoxToRasVox(vol, x2, y2, line.z);
+      const start = nv.frac2canvas(nv.vox2frac(startRas));
+      const end = nv.frac2canvas(nv.vox2frac(endRas));
       if (start && end) {
         return [
           [start[0] * (rect.width / canvas.width), start[1] * (rect.height / canvas.height)],
