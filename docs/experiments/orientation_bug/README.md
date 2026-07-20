@@ -26,13 +26,22 @@ received a mirrored/transposed coordinate.
 
 ## Fix (JS side, `app_three_models.py`)
 
-Read NiiVue's `vol.permRAS` and convert between RAS and native voxel space:
+The fix is scoped to the **click → model** (send) path only. Read NiiVue's
+`vol.permRAS` and convert the RAS voxel from `frac2vox` back to the native stored
+index:
 
 - `pointFromEvent`: RAS voxel → native (`rasVoxToNative`) → then the existing
-  fixed identity flips (via `nativeMaxForAxis`). Coordinate sent to the model is
-  now direction-independent.
-- `lineScreenPointsFromVox`: added `modelVoxToRasVox` (undo identity flip →
-  `nativeToRasVox`) so a drawn line redraws on itself for any orientation.
+  fixed identity flips (via `nativeMaxForAxis`). The coordinate sent to the model
+  is now direction-independent.
+
+The **redraw** path (`lineScreenPointsFromVox`) is left on the original
+`vox2frac([x1,y1,z])` mapping. An initial attempt to remap it via `permRAS`
+mis-drew the RECIST line even for the identity examples: `vox2frac`/`frac2canvas`
+already carry the matching display flips, so the original mapping round-trips
+correctly for identity and remapping it double-corrected. Reverse-engineering
+`vox2frac`/`frac2canvas` well enough to also fix the non-identity redraw was not
+reliable from the source alone, so that display refinement is deferred (the
+mask itself — which is what the model produces — is unaffected).
 
 `write_nifti` (`recist_infer.py:885`, `CopyInformation`) was already correct and
 is unchanged. Model-mask overlays are auto-reoriented to RAS by NiiVue and share
@@ -41,17 +50,14 @@ the input geometry, so they need no change.
 ## Regression tests (all pass)
 
 - `test_orientation_roundtrip.py` — models NiiVue's native↔RAS reorientation;
-  proves the old code diverges by direction and the fix does not, keeping the
+  proves the old send-path diverges by direction and the fix does not, keeping the
   identity example bit-identical.
-- `check_js.mjs` — the actual ported JS helpers: identity / flipped-XY /
+- `check_js.mjs` — the actual ported JS send-path helpers: identity / flipped-XY /
   swapped-XY / flip-X all map one click to the same native index.
-- `check_roundtrip.mjs` — forward (`pointFromEvent`) and reverse
-  (`modelVoxToRasVox`) are exact inverses over all `permRAS` variants.
 
 Run:
 
 ```bash
 python3 docs/experiments/orientation_bug/test_orientation_roundtrip.py
 node    docs/experiments/orientation_bug/check_js.mjs
-node    docs/experiments/orientation_bug/check_roundtrip.mjs
 ```
