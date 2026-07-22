@@ -41,6 +41,7 @@ MODEL_LABELS = {
 }
 _LOADED_MODELS = None
 _LOADED_MODELS_DEVICE: str | None = None
+_LOADED_MODELS_LOAD_S: float | None = None
 _MODEL_LOAD_LOCK = threading.Lock()
 _INFERENCE_LOCK = threading.Lock()
 
@@ -1203,12 +1204,14 @@ def _resolve_window(window_preset: str, window_width: float | None, window_level
 
 
 def _get_loaded_models(device: str | None):
-    global _LOADED_MODELS, _LOADED_MODELS_DEVICE
+    global _LOADED_MODELS, _LOADED_MODELS_DEVICE, _LOADED_MODELS_LOAD_S
 
     requested_device = device or DEFAULT_DEVICE
     with _MODEL_LOAD_LOCK:
         if _LOADED_MODELS is None:
+            started = time.time()
             _LOADED_MODELS = load_all_models(device=requested_device)
+            _LOADED_MODELS_LOAD_S = time.time() - started
             _LOADED_MODELS_DEVICE = requested_device
         elif _LOADED_MODELS_DEVICE != requested_device:
             raise gr.Error(
@@ -1219,10 +1222,17 @@ def _get_loaded_models(device: str | None):
 
 
 def _preload_models_on_startup() -> None:
-    started = time.time()
     print(f"Loading static three-model weights on {DEFAULT_DEVICE}...", flush=True)
-    _get_loaded_models(DEFAULT_DEVICE)
-    print(f"Static three-model weights loaded in {time.time() - started:.1f}s.", flush=True)
+    models = _get_loaded_models(DEFAULT_DEVICE)
+    per_model = ", ".join(
+        f"{MODEL_LABELS[model]}="
+        f"{models.metadata[model.replace('-', '_')].get('load_duration_s', float('nan')):.1f}s"
+        for model in MODELS
+    )
+    print(
+        f"Static three-model weights loaded in {_LOADED_MODELS_LOAD_S:.1f}s ({per_model}).",
+        flush=True,
+    )
 
 
 def run_inference(
@@ -1327,14 +1337,21 @@ def run_inference(
 
     ordered_paths = [Path(results_by_model[model].output_nifti) for model in MODELS]
     ordered_urls = [_file_url(path) for path in ordered_paths]
-    durations = ", ".join(
-        f"{MODEL_LABELS[model]}={results_by_model[model].duration_s:.1f}s"
+    model_meta = _LOADED_MODELS.metadata if _LOADED_MODELS is not None else {}
+
+    def _model_load_s(model: str) -> float:
+        return model_meta.get(model.replace("-", "_"), {}).get("load_duration_s", 0.0)
+
+    timing = "; ".join(
+        f"{MODEL_LABELS[model]}: load={_model_load_s(model):.1f}s, "
+        f"run={results_by_model[model].duration_s:.1f}s, "
+        f"total={_model_load_s(model) + results_by_model[model].duration_s:.1f}s"
         for model in MODELS
     )
     return (
         *(str(path) for path in ordered_paths),
         *ordered_urls,
-        f"Three-model inference complete, RECIST lines={len(recist_lines)}; {durations}",
+        f"Three-model inference complete, RECIST lines={len(recist_lines)}; {timing}",
         _redact_log_paths(log, log_paths),
     )
 

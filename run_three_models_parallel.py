@@ -424,13 +424,27 @@ def load_all_models(
         verbose=verbose,
     )
 
-    eff_medsam2 = _load_medsam2_model(eff_args)
-    medsam2 = _load_medsam2_model(medsam_args)
-    nninteractive = _load_nninteractive_model(nninteractive_args)
+    def _timed_load(loader, loader_args, key: str) -> LoadedModel:
+        start = time.time()
+        loaded = loader(loader_args)
+        load_s = time.time() - start
+        loaded.metadata["load_duration_s"] = load_s
+        print(f"[load] {key}: {load_s:.2f}s", flush=True)
+        return loaded
+
+    eff_medsam2 = _timed_load(_load_medsam2_model, eff_args, "eff_medsam2")
+    medsam2 = _timed_load(_load_medsam2_model, medsam_args, "medsam2")
+    nninteractive = _timed_load(_load_nninteractive_model, nninteractive_args, "nninteractive")
+    total_load_duration_s = (
+        eff_medsam2.metadata["load_duration_s"]
+        + medsam2.metadata["load_duration_s"]
+        + nninteractive.metadata["load_duration_s"]
+    )
     metadata = {
         "eff_medsam2": eff_medsam2.metadata,
         "medsam2": medsam2.metadata,
         "nninteractive": nninteractive.metadata,
+        "total_load_duration_s": total_load_duration_s,
     }
     return LoadedModels(
         eff_medsam2=eff_medsam2,
