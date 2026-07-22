@@ -125,7 +125,7 @@ CANVAS_HTML = """
 
 _JS_TEMPLATE = r"""
 (async () => {
-  const { Niivue } = await import("https://unpkg.com/@niivue/niivue@0.68.2/dist/index.js");
+  const { Niivue, NVImage } = await import("https://unpkg.com/@niivue/niivue@0.68.2/dist/index.js");
 
   const canvas = element.querySelector('#niivue-gl');
   const wrap = element.querySelector('#niivue-wrap');
@@ -919,13 +919,14 @@ _JS_TEMPLATE = r"""
       await paintStatus('Loading model masks...');
       if (nv.closeDrawing) nv.closeDrawing();
       const previousSlice = curSlice();
-      maskVolumeIndexByKey = {};
-      const volumes = [{ url: currentImageUrl, name: 'image.nii.gz' }];
-      available.forEach(model => {
-        maskVolumeIndexByKey[model.key] = volumes.length;
-        volumes.push(modelMaskVolume(model, urlsByKey[model.key]));
+      const loadedMasks = await Promise.all(
+        available.map(model => NVImage.loadFromUrl(modelMaskVolume(model, urlsByKey[model.key])))
+      );
+      clearModelMasks();
+      available.forEach((model, index) => {
+        nv.addVolume(loadedMasks[index]);
+        maskVolumeIndexByKey[model.key] = nv.volumes.length - 1;
       });
-      await nv.loadVolumes(volumes);
       applyOrientation();
       const vol = nv.volumes[0];
       nSlices = (vol.dims && vol.dims[3]) ? vol.dims[3] : 1;
