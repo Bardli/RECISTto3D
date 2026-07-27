@@ -550,7 +550,18 @@ _JS_TEMPLATE = r"""
   }
 
   function lineLength(line) {
-    return Math.hypot(line.x2 - line.x1, line.y2 - line.y1).toFixed(1);
+    // RECIST is clinically a millimetre long-axis measurement, so scale the
+    // voxel delta by in-plane spacing (pixDims[1]=x, pixDims[2]=y). NiiVue
+    // reports pixDims in mm for NIfTI. Fall back to raw voxels when spacing is
+    // missing/degenerate so the column never silently reads 0.0.
+    const pd = nv.volumes?.[0]?.pixDims;
+    const sx = Number(pd?.[1]);
+    const sy = Number(pd?.[2]);
+    const ok = Number.isFinite(sx) && Number.isFinite(sy) && sx > 0 && sy > 0;
+    const dx = line.x2 - line.x1;
+    const dy = line.y2 - line.y1;
+    if (!ok) return Math.hypot(dx, dy).toFixed(1) + ' vox';
+    return Math.hypot(dx * sx, dy * sy).toFixed(1);
   }
 
   function lineScreenPointsFromVox(line) {
