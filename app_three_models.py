@@ -29,8 +29,10 @@ APP_DATA = ROOT / "tmp"/".gradio_recistto3d"
 UPLOAD_DIR = APP_DATA / "uploads"
 RUN_DIR = APP_DATA / "runs"
 WINDOW_PRESET_VALUES = {
+    "Brain (W:80 L:40)": (80, 40),
     "Soft tissues (W:400 L:40)": (400, 40),
     "Lungs (W:1500 L:-600)": (1500, -600),
+    "Bone (W:1800 L:400)": (1800, 400),
 }
 DEFAULT_WINDOW_PRESET = "Soft tissues (W:400 L:40)"
 DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_LEVEL = WINDOW_PRESET_VALUES[DEFAULT_WINDOW_PRESET]
@@ -112,6 +114,10 @@ APP_CSS = """
 #example-buttons button:hover {
   border-color: #7b6cf0 !important;
   box-shadow: 0 3px 8px rgba(123, 108, 240, 0.18) !important;
+}
+#ct-window-preset .wrap {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 """
 
@@ -635,7 +641,7 @@ _JS_TEMPLATE = r"""
             <th style="padding:5px 7px;">Y1</th>
             <th style="padding:5px 7px;">X2</th>
             <th style="padding:5px 7px;">Y2</th>
-            <th style="padding:5px 7px;">Length</th>
+            <th style="padding:5px 7px;">Length(mm)</th>
             <th style="padding:5px 7px;">Color</th>
             <th style="padding:5px 7px;">Action</th>
           </tr>
@@ -1398,11 +1404,12 @@ with gr.Blocks(title="RECIST to 3D for Pan-cancer Segmentation in CT Images") as
                 choices=list(WINDOW_PRESET_VALUES.keys()),
                 value=DEFAULT_WINDOW_PRESET,
                 label="CT Window",
+                elem_id="ct-window-preset",
             )
             with gr.Row():
                 window_width = gr.Number(label="Custom Window W (integer)", value=DEFAULT_WINDOW_WIDTH)
                 window_level = gr.Number(label="Custom Level L (integer)", value=DEFAULT_WINDOW_LEVEL)
-            run = gr.Button("Run three models", variant="primary")
+            run = gr.Button("RUN", variant="primary")
             status = gr.Textbox(label="Status", interactive=False)
             log = gr.Textbox(label="Run log", lines=10, interactive=False)
 
