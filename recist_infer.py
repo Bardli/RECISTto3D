@@ -12,7 +12,7 @@ import json
 import os
 import sys
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -23,6 +23,12 @@ import numpy as np
 PACK_ROOT = Path(__file__).resolve().parent
 MEDSAM2_ROOT = PACK_ROOT / "MedSAM2"
 NNINTERACTIVE_ROOT = PACK_ROOT / "nnInteractive"
+
+# Total z-slab length fed to the SAM-based models, as a multiple of the lesion's
+# in-plane RECIST diameter (converted to z voxels). The slab is centered on the
+# RECIST slice, so each side gets half of this. 1.6 gives the propagation some
+# head-room beyond the lesion's nominal extent; the earlier value was 1.0.
+ZSLAB_DIAMETER_FACTOR = 1.6
 
 
 @dataclass
@@ -421,9 +427,18 @@ def prompt_specs_from_recist(
         spacing_z = float(spacing[0])
         spacing_xy = float((spacing[1] + spacing[2]) / 2.0)
         multiplier = spacing_xy / spacing_z
-        diameter_z = diameter / multiplier
-        z_min = max(0, z_mid_orig - int(diameter_z / 2.0))
-        z_max = min(recist.shape[0] - 1, z_mid_orig + int(diameter_z / 2.0))
+        # diameter is in in-plane PIXELS, so its physical length is
+        # diameter * spacing_xy mm; dividing that by spacing_z gives the count of
+        # z slices, i.e. diameter * multiplier. The official eff script writes
+        # `diameter /= multiplier` here, which inverts the ratio and overshoots by
+        # 1/multiplier**2 (~53x at 0.74/5.40 mm spacing) — enough for the clamp
+        # below to saturate to the whole volume, making the crop a no-op. We
+        # deliberately diverge; see docs/CODEX_FAILURE_ANALYSIS_medsam2_zslab.md
+        # section 11.
+        diameter_z = diameter * multiplier
+        half_slab_z = ZSLAB_DIAMETER_FACTOR * diameter_z / 2.0
+        z_min = max(0, z_mid_orig - int(half_slab_z))
+        z_max = min(recist.shape[0] - 1, z_mid_orig + int(half_slab_z))
 
         if target == "box":
             box_2d = get_diameter_bbox(recist_slice, shift=args.shift)
@@ -613,37 +628,23 @@ def run_medsam2_loop(image, recist, spacing, args, predictor, device, *, rng):
     frames, video_height, video_width = medsam2_preprocess(volume_uint8)
     frames = frames.to(device)
 
-    # Per-model z handling, faithfully mirroring EAY131's two official scripts.
-    #   * eff-medsam2: crop a diameter-derived z-slab [z_min, z_max] around the
-    #     lesion and run under plain inference_mode (the official eff script
-    #     uses NO autocast).
-    #   * medsam2: feed the whole volume (z_min=0, z_max=D-1) under bf16
-    #     autocast on CUDA (CPU bf16 autocast is unsupported for many ops, so
-    #     it falls back to a no-op context there).
-    eff_zslab = args.model == "eff-medsam2"
-
-    if not eff_zslab and str(device).startswith("cuda"):
-        autocast_ctx = torch.autocast("cuda", dtype=torch.bfloat16)
-    else:
-        autocast_ctx = nullcontext()
-
+    # Uniform z handling for both SAM-based models (2026-07-28): crop a
+    # ZSLAB_DIAMETER_FACTOR x diameter z-slab around the lesion and run under
+    # plain inference_mode with NO autocast. This supersedes the earlier
+    # per-model split (eff cropped + fp32, medsam2 whole-volume + bf16); see
+    # docs/CODEX_FAILURE_ANALYSIS_medsam2_zslab.md section 10.
     segs = np.zeros(image.shape, dtype=np.uint16)
     boxes = []
     labels = [prompt.label for prompt in prompt_specs]
 
     for prompt in prompt_specs:
-        if eff_zslab:
-            # Slab bounds were precomputed in prompt_specs_from_recist with the
-            # identical diameter/spacing formula used by the official eff script.
-            z_lo = int(prompt.z_min) if prompt.z_min is not None else 0
-            z_hi = int(prompt.z_max) if prompt.z_max is not None else image.shape[0] - 1
-            model_frames = frames[z_lo : z_hi + 1]
-        else:
-            z_lo = 0
-            model_frames = frames
-        local_z = int(prompt.z) - z_lo  # frame index within the (possibly cropped) volume
+        # Slab bounds were precomputed in prompt_specs_from_recist.
+        z_lo = int(prompt.z_min) if prompt.z_min is not None else 0
+        z_hi = int(prompt.z_max) if prompt.z_max is not None else image.shape[0] - 1
+        model_frames = frames[z_lo : z_hi + 1]
+        local_z = int(prompt.z) - z_lo  # frame index within the cropped volume
 
-        with torch.inference_mode(), autocast_ctx:
+        with torch.inference_mode():
             state = predictor.init_state(model_frames, video_height, video_width)
             if prompt.kind == "box":
                 box_2d = prompt.box_xyxy.astype(np.float32)
