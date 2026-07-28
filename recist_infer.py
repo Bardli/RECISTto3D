@@ -314,6 +314,23 @@ def get_recist_5_points(recist_slice: np.ndarray, rng) -> np.ndarray:
     return coords[idx].astype(np.float32)
 
 
+def get_recist_3_points(recist_slice: np.ndarray) -> np.ndarray:
+    """Three foreground points at the 25%, 50% and 75% marks of the RECIST line.
+
+    Interpolated between the endpoints rather than sampled from the rasterized
+    pixel list: recist_coords_xy() is ordered row-major by np.where, so index
+    fractions are not along-line fractions. Deterministic, so no rng.
+    """
+    p1, p2 = recist_endpoints_xy(recist_slice)
+    fractions = np.array([0.25, 0.50, 0.75], dtype=np.float32)[:, None]
+    points = p1[None, :] + fractions * (p2 - p1)[None, :]
+
+    h, w = recist_slice.shape
+    points[:, 0] = np.clip(points[:, 0], 0, w - 1)
+    points[:, 1] = np.clip(points[:, 1], 0, h - 1)
+    return points.astype(np.float32)
+
+
 def filter_background_points(
     points_xy: np.ndarray,
     foreground_xy: np.ndarray,
@@ -411,8 +428,11 @@ def prompt_specs_from_recist(
         if target == "box":
             box_2d = get_diameter_bbox(recist_slice, shift=args.shift)
             specs.append(PromptSpec(label=label, kind="box", z=z_mid_orig, box_xyxy=box_2d, z_min=z_min, z_max=z_max))
-        elif target in {"5_points", "5pos_4neg", "5pos_6neg"}:
-            points = get_recist_5_points(recist_slice, rng)
+        elif target in {"3_points", "5_points", "5pos_4neg", "5pos_6neg"}:
+            if target == "3_points":
+                points = get_recist_3_points(recist_slice)
+            else:
+                points = get_recist_5_points(recist_slice, rng)
             negative_points = None
             if target == "5pos_4neg":
                 negative_points = get_recist_negative_points(recist_slice, count=4)
@@ -953,10 +973,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nninteractive-checkpoint", default="checkpoint_final.pth", help="Checkpoint filename for nnInteractive.")
     parser.add_argument(
         "--nninteractive-prompt",
-        choices=("5_points", "5pos_4neg", "5pos_6neg"),
+        choices=("3_points", "5_points", "5pos_4neg", "5pos_6neg"),
         default="5_points",
         help=(
-            "RECIST-derived nnInteractive prompt. 5_points uses five foreground points on the RECIST line. "
+            "RECIST-derived nnInteractive prompt. 3_points uses three foreground points at the 25%%, 50%% "
+            "and 75%% marks of the RECIST line (deterministic, ignores --seed). "
+            "5_points uses five foreground points on the RECIST line. "
             "5pos_4neg adds four RECIST-derived rotated-box corner background points. "
             "5pos_6neg also adds two minor-axis background points."
         ),

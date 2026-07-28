@@ -1059,7 +1059,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nninteractive-model-name", default="nnInteractive_v1.0")
     parser.add_argument("--nninteractive-fold")
     parser.add_argument("--nninteractive-checkpoint", default="checkpoint_final.pth")
-    parser.add_argument("--nninteractive-prompt", choices=("5_points", "5pos_4neg", "5pos_6neg"), default="5_points")
+    parser.add_argument(
+        "--nninteractive-prompt",
+        choices=("3_points", "5_points", "5pos_4neg", "5pos_6neg"),
+        default="5_points",
+    )
     parser.add_argument("--nninteractive-compile", action="store_true")
     parser.add_argument("--no-autozoom", action="store_true")
     parser.add_argument("--torch-threads", type=int)

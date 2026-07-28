@@ -127,6 +127,7 @@ Run nnInteractive with the same RECIST mask:
 
 nnInteractive prompt choices:
 
+- `--nninteractive-prompt 3_points` uses three foreground points at the 25%, 50% and 75% marks of the RECIST line. The points are interpolated between the line endpoints, so this mode is deterministic and ignores `--seed`.
 - `--nninteractive-prompt 5_points` uses five foreground points sampled on the RECIST line. This is the default and matches the RECIST benchmark prompt.
 - `--nninteractive-prompt 5pos_4neg` uses five foreground RECIST-line points plus four background points at RECIST-derived rotated-box corners.
 - `--nninteractive-prompt 5pos_6neg` adds two more background points on the RECIST minor axis, outside the line center.
