@@ -301,6 +301,35 @@ def _normalize_device(device: str | None) -> str | None:
     return device
 
 
+def count_parameters(handle) -> int | None:
+    """Total parameter count of a loaded model handle, or None if not countable.
+
+    The SAM-based predictors are themselves nn.Modules; the nnInteractive handle
+    is a session object that holds its net on `.network`. Measured rather than
+    hardcoded so the number tracks whatever checkpoint was actually loaded.
+    """
+    import torch
+
+    if isinstance(handle, torch.nn.Module):
+        return sum(p.numel() for p in handle.parameters())
+    network = getattr(handle, "network", None)
+    if isinstance(network, torch.nn.Module):
+        return sum(p.numel() for p in network.parameters())
+    return None
+
+
+def format_param_count(n: int | None) -> str:
+    """Render a parameter count as e.g. "34.1M"; empty string when unknown.
+
+    Falls back to "K" below 100k so small nets don't all render as "0.0M".
+    """
+    if not n:
+        return ""
+    if n < 100_000:
+        return f"{n / 1e3:.1f}K"
+    return f"{n / 1e6:.1f}M"
+
+
 def _model_loader_args(
     *,
     model: str,
@@ -429,7 +458,10 @@ def load_all_models(
         loaded = loader(loader_args)
         load_s = time.time() - start
         loaded.metadata["load_duration_s"] = load_s
-        print(f"[load] {key}: {load_s:.2f}s", flush=True)
+        n_params = count_parameters(loaded.handle)
+        loaded.metadata["n_parameters"] = n_params
+        size_note = f", {format_param_count(n_params)} params" if n_params else ""
+        print(f"[load] {key}: {load_s:.2f}s{size_note}", flush=True)
         return loaded
 
     eff_medsam2 = _timed_load(_load_medsam2_model, eff_args, "eff_medsam2")

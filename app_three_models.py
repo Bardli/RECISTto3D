@@ -14,7 +14,7 @@ from urllib.parse import quote
 
 import gradio as gr
 
-from run_three_models_parallel import MODELS, load_all_models, run_three_models
+from run_three_models_parallel import MODELS, format_param_count, load_all_models, run_three_models
 
 
 ROOT = Path(__file__).resolve().parent
@@ -40,6 +40,16 @@ MODEL_LABELS = {
     "eff-medsam2": "EfficientMedSAM2",
     "medsam2": "MedSAM2",
     "nninteractive": "nnInteractive",
+}
+# Parameter counts of the shipped checkpoints, measured from the loaded weights
+# (EfficientTAM ViT-S 34.1M / SAM2.1 Hiera-T 39.0M / nnInteractive net 102.4M).
+# Shown in the overlay legend so the size is visible next to each model name.
+# These seed the UI before the models finish loading; once loaded, the real
+# counts from run_three_models_parallel.count_parameters() take over.
+MODEL_PARAM_COUNTS_M = {
+    "eff-medsam2": 34.1,
+    "medsam2": 39.0,
+    "nninteractive": 102.4,
 }
 _LOADED_MODELS = None
 _LOADED_MODELS_DEVICE: str | None = None
@@ -240,9 +250,9 @@ _JS_TEMPLATE = r"""
   bar.appendChild(clearBtn);
 
   const MODEL_MASKS = [
-    { key: 'eff-medsam2', label: 'EfficientMedSAM2', colormap: 'recist_eff_medsam2', color: '#ff4d4d', rgb: [255, 77, 77], opacity: 0.50},
-    { key: 'medsam2', label: 'MedSAM2', colormap: 'recist_medsam2', color: '#31d158', rgb: [49, 209, 88], opacity: 0.50 },
-    { key: 'nninteractive', label: 'nnInteractive', colormap: 'recist_nninteractive', color: '#4cc9f0', rgb: [76, 201, 240], opacity: 0.50 },
+    { key: 'eff-medsam2', label: 'EfficientMedSAM2', size: '__SIZE_EFF__', colormap: 'recist_eff_medsam2', color: '#ff4d4d', rgb: [255, 77, 77], opacity: 0.50},
+    { key: 'medsam2', label: 'MedSAM2', size: '__SIZE_MEDSAM2__', colormap: 'recist_medsam2', color: '#31d158', rgb: [49, 209, 88], opacity: 0.50 },
+    { key: 'nninteractive', label: 'nnInteractive', size: '__SIZE_NNINTERACTIVE__', colormap: 'recist_nninteractive', color: '#4cc9f0', rgb: [76, 201, 240], opacity: 0.50 },
   ];
 
   const VIEWS = [[0,'Axial'],[1,'Coronal'],[2,'Sagittal'],[3,'Multi']];
@@ -259,10 +269,11 @@ _JS_TEMPLATE = r"""
   const maskControls = document.createElement('div');
   maskControls.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:#ddd;margin-left:4px;';
   maskControls.innerHTML = MODEL_MASKS.map(model => `
-    <label title="Show ${model.label} overlay" style="display:flex;align-items:center;gap:3px;cursor:pointer;white-space:nowrap;color:#ddd;">
+    <label title="Show ${model.label} overlay (${model.size} parameters)" style="display:flex;align-items:center;gap:3px;cursor:pointer;white-space:nowrap;color:#ddd;">
       <input class="model-mask-check" type="checkbox" data-model="${model.key}" checked
         style="accent-color:${model.color};cursor:pointer;">
       <span style="color:${model.color};">${model.label}</span>
+      <span style="color:#9aa;font-size:11px;">(${model.size})</span>
     </label>
   `).join('');
   bar.appendChild(maskControls);
@@ -1005,7 +1016,16 @@ _JS_TEMPLATE = r"""
 })();
 """
 
-JS_ON_LOAD = _JS_TEMPLATE
+def _format_size_m(model: str) -> str:
+    """Parameter count for the legend, e.g. "34.1M"."""
+    return f"{MODEL_PARAM_COUNTS_M[model]:.1f}M"
+
+
+JS_ON_LOAD = (
+    _JS_TEMPLATE.replace("__SIZE_EFF__", _format_size_m("eff-medsam2"))
+    .replace("__SIZE_MEDSAM2__", _format_size_m("medsam2"))
+    .replace("__SIZE_NNINTERACTIVE__", _format_size_m("nninteractive"))
+)
 
 
 def _ensure_dirs() -> None:
@@ -1244,6 +1264,7 @@ def _preload_models_on_startup() -> None:
     per_model = ", ".join(
         f"{MODEL_LABELS[model]}="
         f"{models.metadata[model.replace('-', '_')].get('load_duration_s', float('nan')):.1f}s"
+        f"/{format_param_count(models.metadata[model.replace('-', '_')].get('n_parameters'))}"
         for model in MODELS
     )
     print(
@@ -1359,8 +1380,13 @@ def run_inference(
     def _model_load_s(model: str) -> float:
         return model_meta.get(model.replace("-", "_"), {}).get("load_duration_s", 0.0)
 
+    def _model_size(model: str) -> str:
+        """Prefer the count measured at load time; fall back to the static table."""
+        n = model_meta.get(model.replace("-", "_"), {}).get("n_parameters")
+        return format_param_count(n) if n else _format_size_m(model)
+
     timing = "; ".join(
-        f"{MODEL_LABELS[model]}: load={_model_load_s(model):.1f}s, "
+        f"{MODEL_LABELS[model]} ({_model_size(model)}): load={_model_load_s(model):.1f}s, "
         f"run={results_by_model[model].duration_s:.1f}s, "
         f"total={_model_load_s(model) + results_by_model[model].duration_s:.1f}s"
         for model in MODELS
