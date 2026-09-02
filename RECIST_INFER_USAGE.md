@@ -217,9 +217,9 @@ from RECIST according to the selected model.
 
 - Defaults to CPU unless `--device` is provided.
 - Uses the Efficient MedSAM2 tiny (EfficientTAM ViT-Ti) checkpoint.
-- Defaults to the fine-tuned `RECIST-EffTiny-m8` checkpoint (`checkpoint_40.pt`) when that
-  path is present, else the pack-local
-  `MedSAM2/checkpoints/eff_medsam2_tiny_FLARE25_RECIST_baseline.pt`.
+- Prefers the pack-local fine-tuned weights
+  `MedSAM2/checkpoints/eff_medsam2_tiny_RECIST_m8_ep40.pt` (RECIST-EffTiny-m8, epoch 40),
+  else falls back to `MedSAM2/checkpoints/eff_medsam2_tiny_FLARE25_RECIST_baseline.pt`.
 - Override either with `--checkpoint <path>` (any filename is accepted).
 - Converts image intensity to uint8 `[0,255]`.
 - Resizes frames to 512 when needed.

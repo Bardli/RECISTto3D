@@ -150,6 +150,7 @@ Expected local model files:
 ```text
 MedSAM2/checkpoints/medsam2_FLARE25_RECIST_baseline.pt
 MedSAM2/checkpoints/eff_medsam2_tiny_FLARE25_RECIST_baseline.pt
+MedSAM2/checkpoints/eff_medsam2_tiny_RECIST_m8_ep40.pt   # fine-tuned, provisioned separately
 checkpoints/nnInteractive/nnInteractive_v1.0/fold_0/checkpoint_final.pth
 ```
 
