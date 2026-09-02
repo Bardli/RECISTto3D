@@ -42,12 +42,12 @@ MODEL_LABELS = {
     "nninteractive": "nnInteractive",
 }
 # Parameter counts of the shipped checkpoints, measured from the loaded weights
-# (EfficientTAM ViT-S 34.1M / SAM2.1 Hiera-T 39.0M / nnInteractive net 102.4M).
+# (EfficientTAM ViT-Ti 17.9M / SAM2.1 Hiera-T 39.0M / nnInteractive net 102.4M).
 # Shown in the overlay legend so the size is visible next to each model name.
 # These seed the UI before the models finish loading; once loaded, the real
 # counts from run_three_models_parallel.count_parameters() take over.
 MODEL_PARAM_COUNTS_M = {
-    "eff-medsam2": 34.1,
+    "eff-medsam2": 17.9,
     "medsam2": 39.0,
     "nninteractive": 102.4,
 }

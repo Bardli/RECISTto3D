@@ -23,6 +23,12 @@ import numpy as np
 PACK_ROOT = Path(__file__).resolve().parent
 MEDSAM2_ROOT = PACK_ROOT / "MedSAM2"
 NNINTERACTIVE_ROOT = PACK_ROOT / "nnInteractive"
+# Fine-tuned EfficientTAM-Tiny RECIST checkpoint (RECIST-EffTiny-m8, epoch 40).
+# Used as the eff-medsam2 default when present; --checkpoint still overrides it,
+# and the pack falls back to the released Tiny baseline when this path is absent.
+EFF_MEDSAM2_TINY_M8_CKPT = Path(
+    "/mnt/pool/bard_data/EAY131/Models/RECIST-EffTiny-m8/checkpoints/checkpoint_40.pt"
+)
 
 # Total z-slab length fed to the SAM-based models, as a multiple of the lesion's
 # in-plane RECIST diameter (converted to z voxels). The slab is centered on the
@@ -560,14 +566,15 @@ def load_medsam2_predictor(args):
     else:
         from efficient_track_anything.build_efficienttam import build_efficienttam_video_predictor_npz
 
-        filename = "eff_medsam2_small_FLARE25_RECIST_baseline.pt"
-        cfg_name = "efficienttam_s_512x512.yaml"
+        filename = "eff_medsam2_tiny_FLARE25_RECIST_baseline.pt"
+        cfg_name = "efficienttam_ti_512x512.yaml"
+        default_ckpt = EFF_MEDSAM2_TINY_M8_CKPT
         if args.checkpoint:
             ckpt_path = Path(args.checkpoint)
-            if ckpt_path.name != filename:
-                raise ValueError(f"eff-medsam2 only supports the small checkpoint: {filename}")
             if not ckpt_path.exists():
                 raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+        elif default_ckpt.exists():
+            ckpt_path = default_ckpt
         else:
             local_ckpt_path = MEDSAM2_ROOT / "checkpoints" / filename
             ckpt_path = (
@@ -588,7 +595,7 @@ def load_medsam2_predictor(args):
             device=device,
             hydra_overrides_extra=hydra_overrides,
         )
-        name = "Efficient MedSAM2 small"
+        name = "Efficient MedSAM2 tiny (RECIST-EffTiny-m8, epoch 40)"
 
     return predictor, str(ckpt_path), name, device
 
@@ -947,7 +954,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Optional local MedSAM2/Efficient MedSAM2 checkpoint path. "
             "By default the pack-local RECIST checkpoints are used. "
-            "eff-medsam2 accepts only eff_medsam2_small_FLARE25_RECIST_baseline.pt."
+            "eff-medsam2 defaults to the RECIST-EffTiny-m8 checkpoint when present, "
+            "else the released eff_medsam2_tiny_FLARE25_RECIST_baseline.pt."
         ),
     )
     parser.add_argument(
