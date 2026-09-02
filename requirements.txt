@@ -1,0 +1,5 @@
+gradio==6.19.0
+SimpleITK
+numpy
+huggingface_hub
+spaces

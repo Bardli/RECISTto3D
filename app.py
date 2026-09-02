@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -79,6 +80,72 @@ def _detect_device_choices() -> list[str]:
 
 DEVICE_CHOICES = _detect_device_choices()
 DEFAULT_DEVICE = "cuda:0" if "cuda:0" in DEVICE_CHOICES else "cpu"
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _running_on_spaces() -> bool:
+    return bool(os.environ.get("SPACE_ID") or os.environ.get("SYSTEM") == "spaces")
+
+
+def _spaces_has_gpu_runtime() -> bool:
+    """True when this Space is ZeroGPU / dedicated GPU (weights should load)."""
+    if _env_flag("SPACES_ZERO_GPU"):
+        return True
+    hardware = (
+        os.environ.get("SPACE_HARDWARE")
+        or os.environ.get("HF_HARDWARE")
+        or os.environ.get("SPACES_HARDWARE")
+        or ""
+    ).strip().lower()
+    if not hardware:
+        return False
+    return "zero" in hardware or any(
+        token in hardware for token in ("t4", "l4", "a10", "a100", "l40", "gpu")
+    )
+
+
+def _skip_weights() -> bool:
+    """Skip loading checkpoints into memory (CPU viewer debugging).
+
+    Priority:
+    1. Explicit ``SKIP_WEIGHTS=0/1``
+    2. Auto: Spaces on CPU (not ZeroGPU/GPU) -> skip load
+    3. Otherwise load (local CUDA, ZeroGPU, or SKIP_WEIGHTS=0)
+
+    Download is controlled separately by ``_should_download_weights``.
+    """
+    if "SKIP_WEIGHTS" in os.environ:
+        return _env_flag("SKIP_WEIGHTS")
+    if _running_on_spaces() and not _spaces_has_gpu_runtime() and DEFAULT_DEVICE == "cpu":
+        return True
+    return False
+
+
+def _should_download_weights() -> bool:
+    """Whether to fetch checkpoints to disk (even if not loading them)."""
+    if "DOWNLOAD_WEIGHTS" in os.environ:
+        return _env_flag("DOWNLOAD_WEIGHTS")
+    # Default: download on Spaces so cold-start / disk I/O can be measured.
+    # Local runs usually already have checkpoints from install.sh.
+    return _running_on_spaces()
+
+
+SKIP_WEIGHTS = _skip_weights()
+DOWNLOAD_WEIGHTS = _should_download_weights()
+
+MEDSAM2_WEIGHT_REPO = "wanglab/MedSAM2"
+MEDSAM2_WEIGHT_FILES = (
+    "medsam2_FLARE25_RECIST_baseline.pt",
+    "eff_medsam2_small_FLARE25_RECIST_baseline.pt",
+)
+NNINTERACTIVE_WEIGHT_REPO = "nnInteractive/nnInteractive"
+NNINTERACTIVE_WEIGHT_PATTERN = "nnInteractive_v1.0/*"
 APP_CSS = """
 #recist-line-box {
   display: none !important;
@@ -1243,6 +1310,13 @@ def _resolve_window(window_preset: str, window_width: float | None, window_level
 def _get_loaded_models(device: str | None):
     global _LOADED_MODELS, _LOADED_MODELS_DEVICE, _LOADED_MODELS_LOAD_S
 
+    if SKIP_WEIGHTS:
+        raise gr.Error(
+            "Weight loading is disabled (CPU viewer / NIfTI-debug mode). "
+            "Upload and example loading still work. "
+            "Set SKIP_WEIGHTS=0 or switch the Space to ZeroGPU to enable RUN."
+        )
+
     requested_device = device or DEFAULT_DEVICE
     with _MODEL_LOAD_LOCK:
         if _LOADED_MODELS is None:
@@ -1258,7 +1332,82 @@ def _get_loaded_models(device: str | None):
         return _LOADED_MODELS
 
 
+def _download_weights_to_disk() -> list[str]:
+    """Download the three checkpoints from HF Model repos without loading them."""
+    from huggingface_hub import hf_hub_download, snapshot_download
+
+    ready: list[str] = []
+    medsam_ckpt = ROOT / "MedSAM2" / "checkpoints"
+    medsam_ckpt.mkdir(parents=True, exist_ok=True)
+    cache_dir = ROOT / ".hf_cache"
+
+    for filename in MEDSAM2_WEIGHT_FILES:
+        dst = medsam_ckpt / filename
+        if dst.exists() and dst.stat().st_size > 0:
+            print(f"checkpoint present: {dst} ({dst.stat().st_size / (1024**2):.1f} MB)", flush=True)
+            ready.append(str(dst))
+            continue
+        started = time.time()
+        print(f"Downloading {MEDSAM2_WEIGHT_REPO}/{filename} ...", flush=True)
+        src = Path(
+            hf_hub_download(
+                repo_id=MEDSAM2_WEIGHT_REPO,
+                filename=filename,
+                cache_dir=str(cache_dir),
+            )
+        )
+        shutil.copy2(src, dst)
+        elapsed = time.time() - started
+        print(
+            f"ready: {dst} ({dst.stat().st_size / (1024**2):.1f} MB) in {elapsed:.1f}s",
+            flush=True,
+        )
+        ready.append(str(dst))
+
+    nn_root = ROOT / "checkpoints" / "nnInteractive"
+    nn_marker = nn_root / "nnInteractive_v1.0" / "fold_0" / "checkpoint_final.pth"
+    if nn_marker.exists() and nn_marker.stat().st_size > 0:
+        print(
+            f"checkpoint present: {nn_marker} ({nn_marker.stat().st_size / (1024**2):.1f} MB)",
+            flush=True,
+        )
+        ready.append(str(nn_marker))
+    else:
+        started = time.time()
+        print(f"Downloading {NNINTERACTIVE_WEIGHT_REPO}/{NNINTERACTIVE_WEIGHT_PATTERN} ...", flush=True)
+        snapshot_download(
+            repo_id=NNINTERACTIVE_WEIGHT_REPO,
+            allow_patterns=[NNINTERACTIVE_WEIGHT_PATTERN],
+            local_dir=str(nn_root),
+        )
+        elapsed = time.time() - started
+        size_mb = nn_marker.stat().st_size / (1024**2) if nn_marker.exists() else float("nan")
+        print(f"ready: {nn_marker} ({size_mb:.1f} MB) in {elapsed:.1f}s", flush=True)
+        ready.append(str(nn_marker))
+
+    return ready
+
+
 def _preload_models_on_startup() -> None:
+    if DOWNLOAD_WEIGHTS:
+        print("Downloading model checkpoints to disk (HF Model repos)...", flush=True)
+        try:
+            paths = _download_weights_to_disk()
+            print(f"Checkpoint download finished ({len(paths)} files).", flush=True)
+        except Exception as exc:
+            print(f"Checkpoint download failed: {exc}", flush=True)
+            if not SKIP_WEIGHTS:
+                raise
+
+    if SKIP_WEIGHTS:
+        print(
+            "SKIP_WEIGHTS=1: checkpoints may be on disk but will NOT be loaded into memory "
+            f"(device={DEFAULT_DEVICE}, spaces={_running_on_spaces()}). "
+            "Viewer / NIfTI load path only; RUN disabled.",
+            flush=True,
+        )
+        return
+
     print(f"Loading static three-model weights on {DEFAULT_DEVICE}...", flush=True)
     models = _get_loaded_models(DEFAULT_DEVICE)
     per_model = ", ".join(
@@ -1281,6 +1430,14 @@ def run_inference(
     window_width: float | None,
     window_level: float | None,
 ):
+    if SKIP_WEIGHTS:
+        raise gr.Error(
+            "RUN is disabled while weights are not loaded (CPU NIfTI-debug mode). "
+            "Checkpoints may already be downloaded to disk. "
+            "You can still upload / load examples to measure viewer speed. "
+            "Set env SKIP_WEIGHTS=0 or move the Space to ZeroGPU to enable inference."
+        )
+
     if not image_path:
         raise gr.Error("Please upload an image or click Load example first.")
 
@@ -1405,6 +1562,13 @@ with gr.Blocks(title="RECIST to 3D for Pan-cancer Segmentation in CT Images") as
         "Upload a `.nii/.nii.gz` file, or click **Load example**. In the **Axial** view, click **Draw RECIST**, "
         "drag one or more lines, then run all three models. Spacing is read automatically from the NIfTI header."
     )
+    if SKIP_WEIGHTS:
+        gr.Markdown(
+            "> **CPU / NIfTI-debug mode:** checkpoints are **downloaded** from HF Model repos "
+            "(`wanglab/MedSAM2`, `nnInteractive/nnInteractive`) but **not loaded** into memory. "
+            "Upload and example loading work; **RUN** is disabled. "
+            "Set `SKIP_WEIGHTS=0` or switch to ZeroGPU to enable inference."
+        )
 
     image_path_state = gr.Textbox(visible=False)
     image_url_state = gr.Textbox(visible=False)
@@ -1587,16 +1751,21 @@ with gr.Blocks(title="RECIST to 3D for Pan-cancer Segmentation in CT Images") as
     )
 
 
+# Spaces may import this module without running ``__main__``; still download/load here.
+_preload_models_on_startup()
+
+
 if __name__ == "__main__":
-    _preload_models_on_startup()
+    on_spaces = _running_on_spaces()
+    port = int(os.environ.get("PORT", "7860" if on_spaces else "7872"))
     demo.launch(
         server_name="0.0.0.0",
-        server_port=7872,
+        server_port=port,
         css=APP_CSS,
         allowed_paths=[
             str(EXAMPLES_DIR),
             str(APP_DATA),
         ],
         share=False,
-        mcp_server=True
+        mcp_server=_env_flag("ENABLE_MCP", default=not on_spaces),
     )
