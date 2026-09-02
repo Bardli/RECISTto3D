@@ -64,7 +64,7 @@ medsam_ckpt.mkdir(parents=True, exist_ok=True)
 
 for filename in [
     "medsam2_FLARE25_RECIST_baseline.pt",
-    "eff_medsam2_small_FLARE25_RECIST_baseline.pt",
+    "eff_medsam2_tiny_FLARE25_RECIST_baseline.pt",
 ]:
     src = Path(
         hf_hub_download(

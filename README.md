@@ -132,7 +132,7 @@ medsam_ckpt.mkdir(parents=True, exist_ok=True)
 
 for filename in [
     "medsam2_FLARE25_RECIST_baseline.pt",
-    "eff_medsam2_small_FLARE25_RECIST_baseline.pt",
+    "eff_medsam2_tiny_FLARE25_RECIST_baseline.pt",
 ]:
     src = Path(hf_hub_download("wanglab/MedSAM2", filename=filename, cache_dir=str(root / ".hf_cache")))
     shutil.copy2(src, medsam_ckpt / filename)
@@ -149,7 +149,8 @@ Expected local model files:
 
 ```text
 MedSAM2/checkpoints/medsam2_FLARE25_RECIST_baseline.pt
-MedSAM2/checkpoints/eff_medsam2_small_FLARE25_RECIST_baseline.pt
+MedSAM2/checkpoints/eff_medsam2_tiny_FLARE25_RECIST_baseline.pt
+MedSAM2/checkpoints/eff_medsam2_tiny_RECIST_m8_ep40.pt   # fine-tuned, provisioned separately
 checkpoints/nnInteractive/nnInteractive_v1.0/fold_0/checkpoint_final.pth
 ```
 

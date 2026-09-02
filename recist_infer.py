@@ -560,25 +560,29 @@ def load_medsam2_predictor(args):
     else:
         from efficient_track_anything.build_efficienttam import build_efficienttam_video_predictor_npz
 
-        filename = "eff_medsam2_small_FLARE25_RECIST_baseline.pt"
-        cfg_name = "efficienttam_s_512x512.yaml"
+        # Fine-tuned EfficientTAM-Tiny RECIST weights (RECIST-EffTiny-m8, epoch 40),
+        # provisioned into the pack next to the released baselines.
+        finetuned_name = "eff_medsam2_tiny_RECIST_m8_ep40.pt"
+        # Released Tiny baseline, used only when the fine-tuned weights are absent.
+        filename = "eff_medsam2_tiny_FLARE25_RECIST_baseline.pt"
+        cfg_name = "efficienttam_ti_512x512.yaml"
         if args.checkpoint:
             ckpt_path = Path(args.checkpoint)
-            if ckpt_path.name != filename:
-                raise ValueError(f"eff-medsam2 only supports the small checkpoint: {filename}")
             if not ckpt_path.exists():
                 raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
         else:
+            finetuned_ckpt_path = MEDSAM2_ROOT / "checkpoints" / finetuned_name
             local_ckpt_path = MEDSAM2_ROOT / "checkpoints" / filename
-            ckpt_path = (
-                local_ckpt_path
-                if local_ckpt_path.exists()
-                else hf_hub_download(
+            if finetuned_ckpt_path.exists():
+                ckpt_path = finetuned_ckpt_path
+            elif local_ckpt_path.exists():
+                ckpt_path = local_ckpt_path
+            else:
+                ckpt_path = hf_hub_download(
                     repo_id="wanglab/MedSAM2",
                     filename=filename,
                     cache_dir=str(MEDSAM2_ROOT / "checkpoints"),
                 )
-            )
         cfg_path = "/" + str(MEDSAM2_ROOT / "efficient_track_anything" / "configs" / cfg_name)
         device = args.device or "cpu"
         hydra_overrides = ["++model.compile_image_encoder=False"]
@@ -588,7 +592,11 @@ def load_medsam2_predictor(args):
             device=device,
             hydra_overrides_extra=hydra_overrides,
         )
-        name = "Efficient MedSAM2 small"
+        name = (
+            "Efficient MedSAM2 tiny (RECIST-EffTiny-m8, epoch 40)"
+            if Path(ckpt_path).name == finetuned_name
+            else "Efficient MedSAM2 tiny"
+        )
 
     return predictor, str(ckpt_path), name, device
 
@@ -947,7 +955,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Optional local MedSAM2/Efficient MedSAM2 checkpoint path. "
             "By default the pack-local RECIST checkpoints are used. "
-            "eff-medsam2 accepts only eff_medsam2_small_FLARE25_RECIST_baseline.pt."
+            "eff-medsam2 prefers MedSAM2/checkpoints/eff_medsam2_tiny_RECIST_m8_ep40.pt, "
+            "else falls back to eff_medsam2_tiny_FLARE25_RECIST_baseline.pt."
         ),
     )
     parser.add_argument(
