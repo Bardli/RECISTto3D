@@ -142,7 +142,7 @@ DOWNLOAD_WEIGHTS = _should_download_weights()
 MEDSAM2_WEIGHT_REPO = "wanglab/MedSAM2"
 MEDSAM2_WEIGHT_FILES = (
     "medsam2_FLARE25_RECIST_baseline.pt",
-    "eff_medsam2_small_FLARE25_RECIST_baseline.pt",
+    "eff_medsam2_tiny_FLARE25_RECIST_baseline.pt",
 )
 NNINTERACTIVE_WEIGHT_REPO = "nnInteractive/nnInteractive"
 NNINTERACTIVE_WEIGHT_PATTERN = "nnInteractive_v1.0/*"
@@ -191,6 +191,41 @@ APP_CSS = """
 #example-buttons button:hover {
   border-color: #7b6cf0 !important;
   box-shadow: 0 3px 8px rgba(123, 108, 240, 0.18) !important;
+}
+#download-segmentation {
+  width: 100%;
+  max-width: 970px;
+  padding: 14px 0 0;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+#download-segmentation .download-segmentation-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 10px;
+  text-align: center;
+  color: #374151;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+#download-segmentation .download-segmentation-title p {
+  margin: 0;
+  white-space: nowrap;
+}
+#download-segmentation .download-segmentation-title::before,
+#download-segmentation .download-segmentation-title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: #d1d5db;
+}
+#download-segmentation .form {
+  flex: 1 1 0;
+  min-width: 0;
 }
 #ct-window-preset .wrap {
   display: grid;
@@ -1187,9 +1222,9 @@ def prepare_uploaded_image(file_path: str | None):
         return (
             "",
             "",
-            "",
-            "",
-            "",
+            None,
+            None,
+            None,
             "",
             "",
             "",
@@ -1201,9 +1236,9 @@ def prepare_uploaded_image(file_path: str | None):
     return (
         str(image_path),
         _file_url(image_path),
-        "",
-        "",
-        "",
+        None,
+        None,
+        None,
         "",
         "",
         "",
@@ -1222,9 +1257,9 @@ def load_example_image(example_path: str, window_preset: str):
     return (
         str(image),
         _file_url(image),
-        "",
-        "",
-        "",
+        None,
+        None,
+        None,
         "",
         "",
         "",
@@ -1477,9 +1512,9 @@ def run_inference(
             if part
         )
         return (
-            "",
-            "",
-            "",
+            None,
+            None,
+            None,
             "",
             "",
             "",
@@ -1520,9 +1555,9 @@ def run_inference(
 
     if missing_models or missing_files:
         return (
-            "",
-            "",
-            "",
+            None,
+            None,
+            None,
             "",
             "",
             "",
@@ -1572,9 +1607,6 @@ with gr.Blocks(title="RECIST to 3D for Pan-cancer Segmentation in CT Images") as
 
     image_path_state = gr.Textbox(visible=False)
     image_url_state = gr.Textbox(visible=False)
-    eff_mask_path_state = gr.Textbox(visible=False)
-    medsam2_mask_path_state = gr.Textbox(visible=False)
-    nninteractive_mask_path_state = gr.Textbox(visible=False)
     eff_mask_url_state = gr.Textbox(visible=False)
     medsam2_mask_url_state = gr.Textbox(visible=False)
     nninteractive_mask_url_state = gr.Textbox(visible=False)
@@ -1623,6 +1655,24 @@ with gr.Blocks(title="RECIST to 3D for Pan-cancer Segmentation in CT Images") as
                     load_liver = gr.Button("Liver cancer", variant="secondary")
                     load_lung = gr.Button("Lung cancer", variant="secondary")
                     load_pancreas = gr.Button("Pancreas cancer", variant="secondary")
+            with gr.Group(elem_id="download-segmentation"):
+                gr.Markdown("Download segmentation", elem_classes=["download-segmentation-title"])
+                with gr.Row():
+                    eff_mask_download = gr.File(
+                        label="EfficientMedSAM2 (.nii.gz)",
+                        type="filepath",
+                        interactive=False,
+                    )
+                    medsam2_mask_download = gr.File(
+                        label="MedSAM2 (.nii.gz)",
+                        type="filepath",
+                        interactive=False,
+                    )
+                    nninteractive_mask_download = gr.File(
+                        label="nnInteractive (.nii.gz)",
+                        type="filepath",
+                        interactive=False,
+                    )
 
     upload.change(
         prepare_uploaded_image,
@@ -1630,9 +1680,9 @@ with gr.Blocks(title="RECIST to 3D for Pan-cancer Segmentation in CT Images") as
         outputs=[
             image_path_state,
             image_url_state,
-            eff_mask_path_state,
-            medsam2_mask_path_state,
-            nninteractive_mask_path_state,
+            eff_mask_download,
+            medsam2_mask_download,
+            nninteractive_mask_download,
             eff_mask_url_state,
             medsam2_mask_url_state,
             nninteractive_mask_url_state,
@@ -1659,9 +1709,9 @@ with gr.Blocks(title="RECIST to 3D for Pan-cancer Segmentation in CT Images") as
             outputs=[
                 image_path_state,
                 image_url_state,
-                eff_mask_path_state,
-                medsam2_mask_path_state,
-                nninteractive_mask_path_state,
+                eff_mask_download,
+                medsam2_mask_download,
+                nninteractive_mask_download,
                 eff_mask_url_state,
                 medsam2_mask_url_state,
                 nninteractive_mask_url_state,
@@ -1728,9 +1778,9 @@ with gr.Blocks(title="RECIST to 3D for Pan-cancer Segmentation in CT Images") as
         run_inference,
         inputs=[image_path_state, recist_line, device, window_preset, window_width, window_level],
         outputs=[
-            eff_mask_path_state,
-            medsam2_mask_path_state,
-            nninteractive_mask_path_state,
+            eff_mask_download,
+            medsam2_mask_download,
+            nninteractive_mask_download,
             eff_mask_url_state,
             medsam2_mask_url_state,
             nninteractive_mask_url_state,
